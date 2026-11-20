@@ -42,6 +42,7 @@ def main(argv: list[str]) -> int:
     p_check.add_argument("issue_file", type=Path)
     p_import = sub.add_parser("import")
     p_import.add_argument("file", type=Path)
+    p_import.add_argument("--run-date", type=date.fromisoformat)
     args = parser.parse_args(argv[1:])
 
     if args.command == "import":
