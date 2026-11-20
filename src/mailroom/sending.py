@@ -23,3 +23,9 @@ def send_all(plan: Plan, settings: Settings, client: httpx.Client, latency: floa
         time.sleep(latency)
         sent.append(send_entry(client, settings, entry))
     return sent
+
+
+async def send_all_at_once(
+    plan: Plan, settings: Settings, client: httpx.AsyncClient, latency: float, limit: int
+) -> list[Sent]:
+    raise NotImplementedError

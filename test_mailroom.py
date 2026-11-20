@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -640,3 +641,120 @@ def test_send_with_a_negative_latency_is_refused_with_exit_2() -> None:
     assert result.returncode == 2
     assert result.stdout == ""
     assert "error: argument --latency: latency cannot be negative" in result.stderr
+
+
+# --- send --at-once N: the same send with asyncio, at most N at a time, results in the plan's order ---
+
+
+class Busy:
+    """What a fake async server saw: how many requests were in flight at once, and the order they finished."""
+
+    def __init__(self) -> None:
+        self.running = 0
+        self.most_at_once = 0
+        self.finished: list[str] = []
+
+
+def async_echo_server(busy: Busy, seen: list[httpx.Request], slowest_first: bool = False) -> httpx.AsyncClient:
+    """Each request takes a moment. With slowest_first, early entries take longest, so they finish last."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        to = recipient_of(request)
+        busy.running += 1
+        busy.most_at_once = max(busy.most_at_once, busy.running)
+        index = int(re.search(r"\d+", to).group())  # type: ignore[union-attr]
+        await asyncio.sleep(0.01 * (20 - index) if slowest_first else 0.02)
+        busy.running -= 1
+        busy.finished.append(to)
+        return httpx.Response(200, json={"id": f"em_{to}"})
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def send_at_once(plan: Plan, client: httpx.AsyncClient, latency: float = 0, limit: int = 5) -> list[resend.Sent]:
+    async def go() -> list[resend.Sent]:
+        async with client:
+            return await sending.send_all_at_once(plan, PRACTICE, client, latency, limit)
+
+    return asyncio.run(go())
+
+
+def test_at_once_gives_the_results_in_the_plans_order_even_when_the_requests_finish_in_another_order() -> None:
+    busy = Busy()
+    plan = plan_of(10)
+    sent = send_at_once(plan, async_echo_server(busy, [], slowest_first=True))
+    assert busy.finished != [e.to for e in plan.entries]  # the server really did finish them out of order
+    assert [s.id for s in sent] == [f"em_{e.to}" for e in plan.entries]
+
+
+def test_at_once_5_never_has_more_than_5_requests_running_at_once() -> None:
+    busy = Busy()
+    sent = send_at_once(plan_of(24), async_echo_server(busy, []), limit=5)
+    assert len(sent) == 24
+    assert busy.most_at_once <= 5
+
+
+def test_at_once_5_does_run_5_at_the_same_time() -> None:
+    busy = Busy()
+    send_at_once(plan_of(24), async_echo_server(busy, []), limit=5)
+    assert busy.most_at_once == 5
+
+
+def test_at_once_2_never_has_more_than_2_requests_running_at_once() -> None:
+    busy = Busy()
+    send_at_once(plan_of(10), async_echo_server(busy, []), limit=2)
+    assert busy.most_at_once == 2
+
+
+def test_at_once_waits_the_latency_before_each_request_but_the_waits_overlap() -> None:
+    start = time.perf_counter()
+    send_at_once(plan_of(10), async_echo_server(Busy(), []), latency=0.1, limit=5)
+    elapsed = time.perf_counter() - start
+    assert elapsed >= 0.2  # 10 requests, 5 at a time: two rounds, each waiting 0.1 first
+    assert elapsed < 0.8  # one by one it would be at least 10 * 0.1 = 1.0
+
+
+def test_at_once_with_a_real_address_anywhere_in_the_plan_sends_nothing() -> None:
+    plan = plan_of(8)
+    plan.entries[7] = Entry(to="someone@gmail.com", subject="Hello", text="Hi")
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError, match="someone@gmail.com"):
+        send_at_once(plan, async_echo_server(Busy(), seen))
+    assert seen == []
+
+
+def test_send_command_with_at_once_5_sends_all_24_and_prints_how_long_it_took(capsys: pytest.CaptureFixture[str]) -> None:
+    busy = Busy()
+    seen: list[httpx.Request] = []
+    transport = async_echo_server(busy, seen)._transport  # the fake server's transport
+    code = commands.send_now(ISSUE_01, date(2026, 12, 7), PRACTICE, 0, at_once=5, async_transport=transport)
+    assert code == 0
+    assert len(seen) == 24
+    assert busy.most_at_once <= 5
+    assert re.fullmatch(r"Sent 24 emails in \d+\.\d{2} seconds", capsys.readouterr().out.strip())
+
+
+@pytest.mark.parametrize("limit", ["0", "-3", "five"])
+def test_at_once_must_be_a_whole_number_of_at_least_1_exit_2(limit: str) -> None:
+    result = run_raw("send", "issues/issue-01.md", "--run-date", SEND_DATE, "--at-once", limit)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "error: argument --at-once:" in result.stderr
+
+
+def test_at_once_has_no_meaning_with_dry_run_exit_2() -> None:
+    result = run_raw("send", "issues/issue-01.md", "--dry-run", "--run-date", SEND_DATE, "--at-once", "5")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "--at-once" in result.stderr
+
+
+def test_send_at_once_from_the_command_line_refuses_a_server_that_is_not_localhost_with_one_sentence_and_exit_2() -> None:
+    result = run_raw(
+        "send", "issues/issue-01.md", "--run-date", SEND_DATE, "--at-once", "5",
+        env={"RESEND_API_URL": "https://api.resend.com"},
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert len(result.stderr.strip().splitlines()) == 1

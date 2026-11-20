@@ -70,6 +70,8 @@ def send_now(
     settings: Settings,
     latency: float,
     transport: httpx.BaseTransport | None = None,
+    at_once: int | None = None,
+    async_transport: httpx.AsyncBaseTransport | None = None,
 ) -> int:
     """Check the issue, plan it, send the whole plan one by one, and say how long it took."""
     issue = read_issue(issue_file)
