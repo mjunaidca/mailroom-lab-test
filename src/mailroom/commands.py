@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import NoReturn
 
 from mailroom.checks import check_issue
-from mailroom.issue import Issue
+from mailroom.issue import Issue, read_issue
+from mailroom.plan import build_plan, write_plan
 from mailroom.problems import InputError, Problem
 from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, next_send, read_subscribers
@@ -41,6 +42,22 @@ def import_file(path: Path, run_date: date) -> int:
     return 1 if result.problems else 0
 
 
+def send(issue_file: Path, run_date: date) -> int:
+    """Dry run: check the issue, then write the plan. Nothing is written if anything is wrong."""
+    issue = read_issue(issue_file)
+    issue_problems = check_issue(issue)
+    if issue_problems:
+        print("\n".join(issue_problems))
+        return 1
+    result = read_subscribers()
+    if result.problems:
+        print_problems(result.problems)
+        return 1
+    write_plan(build_plan(issue, result.good, run_date))
+    print(f"Planned {len(result.good)} emails for {run_date}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="mailroom.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -54,6 +71,10 @@ def main(argv: list[str]) -> int:
     p_import = sub.add_parser("import")
     p_import.add_argument("file", type=Path)
     p_import.add_argument("--run-date", type=date.fromisoformat)
+    p_send = sub.add_parser("send")
+    p_send.add_argument("issue_file", type=Path)
+    p_send.add_argument("--dry-run", action="store_true", required=True)
+    p_send.add_argument("--run-date", type=date.fromisoformat)
     args = parser.parse_args(argv[1:])
 
     if args.command == "check":
@@ -65,6 +86,8 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "import":
             return import_file(args.file, run_date)
+        if args.command == "send":
+            return send(args.issue_file, run_date)
         if args.command == "subscribers":
             return subscribers(run_date, args.since_days)
     except InputError as error:

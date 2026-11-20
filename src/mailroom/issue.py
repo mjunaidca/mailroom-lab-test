@@ -1,5 +1,8 @@
 import re
 from dataclasses import dataclass, replace
+from pathlib import Path
+
+from mailroom.problems import InputError
 
 MAX_SUBJECT_LENGTH = 50
 MAX_PREVIEW_LENGTH = 90
@@ -48,3 +51,10 @@ class Issue:
             preview=fill(self.preview),
             body=self.body.replace("{{first_name}}", first_name),
         )
+
+
+def read_issue(path: Path) -> Issue:
+    """Read an issue file. A missing file raises InputError."""
+    if not path.is_file():
+        raise InputError(f"I can't find the file {path}.")
+    return Issue.from_text(path.read_text())
