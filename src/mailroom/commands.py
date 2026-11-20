@@ -7,27 +7,38 @@ from typing import NoReturn
 
 from mailroom.checks import check_issue
 from mailroom.issue import Issue
-from mailroom.signups import import_signups
+from mailroom.problems import InputError, Problem
+from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, next_send, read_subscribers
 
 
-def subscribers(run_date: date, since_days: int | None = None) -> None:
-    people = read_subscribers()
+def print_problems(problems: list[Problem]) -> None:
+    for p in problems:
+        print(f"rejected: {p.name} - row {p.row}, {p.field}: {p.message}")
+
+
+def subscribers(run_date: date, since_days: int | None = None) -> int:
+    result = read_subscribers()
+    if result.problems:
+        print_problems(result.problems)
+        return 1
+    people = result.good
     if since_days is not None:
         print(f"Joined in last {since_days} days: {len(joined_since(people, run_date, since_days))}")
-        return
+        return 0
     groups = Counter(s.group for s in people)
     print(f"Total: {len(people)}")
     for group, count in groups.items():
         print(f"{group}: {count}")
+    return 0
 
 
-def import_file(path: Path, run_date: date) -> None:
-    for result in import_signups(path, run_date):
-        if result.reasons:
-            print(f"rejected: {result.name} - {'; '.join(result.reasons)}")
-        else:
-            print(f"accepted: {result.name}")
+def import_file(path: Path, run_date: date) -> int:
+    result = read_signups(path, run_date)
+    for subscriber in result.good:
+        print(f"accepted: {subscriber.first_name} {subscriber.last_name}")
+    print_problems(result.problems)
+    return 1 if result.problems else 0
 
 
 def main(argv: list[str]) -> int:
@@ -51,13 +62,15 @@ def main(argv: list[str]) -> int:
 
     # The command line is the only place that reads today's date.
     run_date = args.run_date or date.today()
-    if args.command == "import":
-        import_file(args.file, run_date)
-        return 0
-    if args.command == "subscribers":
-        subscribers(run_date, args.since_days)
-    else:
-        print(f"Next send: {next_send(run_date)}")
+    try:
+        if args.command == "import":
+            return import_file(args.file, run_date)
+        if args.command == "subscribers":
+            return subscribers(run_date, args.since_days)
+    except InputError as error:
+        print(error, file=sys.stderr)
+        return 2
+    print(f"Next send: {next_send(run_date)}")
     return 0
 
 

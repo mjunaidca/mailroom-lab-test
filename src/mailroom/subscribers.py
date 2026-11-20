@@ -1,9 +1,13 @@
 import csv
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationError
+
+from mailroom.problems import InputError, Problem
 
 SUBSCRIBERS_CSV = Path(__file__).parents[2] / "data" / "subscribers.csv"
 
@@ -21,9 +25,51 @@ class Subscriber(BaseModel):
     consent: str = Field(min_length=1)
 
 
-def read_subscribers() -> list[Subscriber]:
-    with SUBSCRIBERS_CSV.open(newline="") as f:
-        return [Subscriber.model_validate(row) for row in csv.DictReader(f)]
+@dataclass(frozen=True)
+class ReadResult:
+    """Everything a read found: the good subscribers and every problem, in file order."""
+
+    good: list[Subscriber]
+    problems: list[Problem]
+
+
+# (field, message) pairs; an extra rule for rows the model already accepted.
+ExtraCheck = Callable[[Subscriber], list[tuple[str, str]]]
+
+
+def read_subscribers(
+    path: Path = SUBSCRIBERS_CSV, extra_check: ExtraCheck | None = None
+) -> ReadResult:
+    """Read a subscribers CSV. Bad rows become problems; only a bad file raises InputError."""
+    if not path.is_file():
+        raise InputError(f"I can't find the file {path}.")
+    good: list[Subscriber] = []
+    problems: list[Problem] = []
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        expected = list(Subscriber.model_fields)
+        found = reader.fieldnames or []
+        if sorted(found) != sorted(expected):
+            raise InputError(
+                f"The columns in {path} are wrong: expected {', '.join(expected)} "
+                f"but found {', '.join(found) or 'none'}."
+            )
+        for row in reader:
+            name = f"{row['first_name'] or ''} {row['last_name'] or ''}".strip()
+            try:
+                subscriber = Subscriber.model_validate(row)
+            except ValidationError as error:
+                problems += [
+                    Problem(reader.line_num, name, str(e["loc"][0]), e["msg"])
+                    for e in error.errors()
+                ]
+                continue
+            found_here = extra_check(subscriber) if extra_check else []
+            if found_here:
+                problems += [Problem(reader.line_num, name, fld, msg) for fld, msg in found_here]
+            else:
+                good.append(subscriber)
+    return ReadResult(good, problems)
 
 
 def joined_since(
