@@ -28,8 +28,20 @@ def next_send(run_date):
     return first + timedelta(days=(7 - first.weekday()) % 7)
 
 
+MAX_SUBJECT_LENGTH = 50
+
+
 def check_subject(issue_text):
-    raise NotImplementedError
+    """Return a list of problems with the issue's Subject line; empty if fine."""
+    for line in issue_text.splitlines():
+        if line.startswith("Subject:"):
+            subject = line[len("Subject:"):].strip()
+            if not subject:
+                return ["empty"]
+            if len(subject) > MAX_SUBJECT_LENGTH:
+                return ["too long"]
+            return []
+    return ["missing"]
 
 
 def subscribers(run_date, since_days=None):
