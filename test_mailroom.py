@@ -1,3 +1,4 @@
+import json
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -293,3 +294,48 @@ def test_import_with_wrong_columns_says_so_in_one_sentence_and_exits_2(tmp_path:
     assert len(result.stderr.strip().splitlines()) == 1
     assert "Traceback" not in result.stderr
     assert "first_name" in result.stderr
+
+
+PLAN = Path(__file__).parent / "outbox" / "plan.json"
+SEND_DATE = "2026-12-07"
+
+
+def test_send_dry_run_writes_a_plan_of_24_entries_with_the_run_date() -> None:
+    PLAN.unlink(missing_ok=True)
+    run("send", "issues/issue-01.md", "--dry-run", "--run-date", SEND_DATE)
+    plan = json.loads(PLAN.read_text())
+    assert plan["run_date"] == SEND_DATE
+    assert len(plan["entries"]) == 24
+
+
+def test_send_dry_run_first_entry_is_to_ayesha_and_says_hi_ayesha() -> None:
+    PLAN.unlink(missing_ok=True)
+    run("send", "issues/issue-01.md", "--dry-run", "--run-date", SEND_DATE)
+    first = json.loads(PLAN.read_text())["entries"][0]
+    assert first["to"] == "ayesha.khan@example.com"
+    assert first["subject"] == "The Steep Club opens Monday"
+    assert "Hi Ayesha" in first["text"]
+    assert "{{first_name}}" not in first["text"]
+
+
+def test_send_dry_run_with_an_issue_that_fails_the_check_writes_no_plan(tmp_path: Path) -> None:
+    bad_issue = tmp_path / "bad-issue.md"
+    bad_issue.write_text(issue_01_with("{{first_name}}", "there"))
+    PLAN.unlink(missing_ok=True)
+    result = run_raw("send", str(bad_issue), "--dry-run", "--run-date", SEND_DATE)
+    assert result.returncode == 1
+    assert "greeting: missing {{first_name}}" in result.stdout
+    assert not PLAN.exists()
+
+
+def test_send_with_no_issue_file_says_so_in_one_sentence_and_exits_2() -> None:
+    result = run_raw("send", "issues/nope.md", "--dry-run", "--run-date", SEND_DATE)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "issues/nope.md" in result.stderr
+
+
+def test_outbox_is_kept_out_of_git() -> None:
+    ignored = subprocess.run(["git", "check-ignore", "-q", "outbox/plan.json"])
+    assert ignored.returncode == 0
