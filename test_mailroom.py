@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 
 from mailroom.checks import check_issue, check_subject
+from mailroom.subscribers import joined_since, read_subscribers
 
 
 def run(*args):
@@ -31,6 +32,11 @@ def test_subscribers_reports_8_daily_drinkers():
 def test_subscribers_counts_7_joined_in_last_30_days():
     lines = run("subscribers", "--since-days", "30", "--run-date", "2026-11-20")
     assert "Joined in last 30 days: 7" in lines
+
+
+def test_joined_since_accepts_run_date_as_text_2026_11_20():
+    rows = read_subscribers()
+    assert len(joined_since(rows, "2026-11-20", 30)) == 7
 
 
 def test_next_send_from_2026_11_20_is_2026_12_07():
