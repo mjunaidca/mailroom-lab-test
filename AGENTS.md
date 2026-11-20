@@ -1,0 +1,9 @@
+# Mailroom
+
+Mailroom is a command-line tool for one newsletter: Kettlebird Tea's Steep Club. It reads the subscribers, checks an issue, and sends it to a practice mail server.
+
+## Rules
+
+- Use uv for everything (project setup, dependencies, running code, tests).
+- Never use a real person's email address. Use @example.com, and @resend.dev for practice sends.
+- Commit and push after every step.
