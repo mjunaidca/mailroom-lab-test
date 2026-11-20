@@ -92,7 +92,13 @@ def main(argv):
     p_sub.add_argument("--run-date", type=date.fromisoformat)
     p_next = sub.add_parser("next-send")
     p_next.add_argument("--run-date", type=date.fromisoformat)
+    p_check = sub.add_parser("check")
+    p_check.add_argument("issue_file", type=Path)
     args = parser.parse_args(argv[1:])
+
+    if args.command == "check":
+        print("\n".join(check_issue(args.issue_file.read_text()) or ["OK"]))
+        return 0
 
     # The command line is the only place that reads today's date.
     run_date = args.run_date or date.today()
