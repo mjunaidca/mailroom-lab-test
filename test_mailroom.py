@@ -663,8 +663,12 @@ def async_echo_server(busy: Busy, seen: list[httpx.Request], slowest_first: bool
         to = recipient_of(request)
         busy.running += 1
         busy.most_at_once = max(busy.most_at_once, busy.running)
-        index = int(re.search(r"\d+", to).group())  # type: ignore[union-attr]
-        await asyncio.sleep(0.01 * (20 - index) if slowest_first else 0.02)
+        if slowest_first:
+            match = re.search(r"\d+", to)
+            assert match is not None
+            await asyncio.sleep(0.01 * (20 - int(match.group())))
+        else:
+            await asyncio.sleep(0.02)
         busy.running -= 1
         busy.finished.append(to)
         return httpx.Response(200, json={"id": f"em_{to}"})

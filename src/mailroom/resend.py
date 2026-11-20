@@ -100,6 +100,19 @@ def _call(
     return _answer(response, method, path, unknown_id)
 
 
+async def _call_async(
+    client: httpx.AsyncClient, settings: Settings, method: str, path: str, json: dict[str, object]
+) -> httpx.Response:
+    """The same one request as _call, for the async client."""
+    try:
+        response = await client.request(
+            method, settings.url.rstrip("/") + path, json=json, headers={"Authorization": f"Bearer {settings.key}"}
+        )
+    except httpx.TransportError:
+        raise _unreachable(settings) from None
+    return _answer(response, method, path, None)
+
+
 def _parse[T: BaseModel](model: type[T], response: httpx.Response) -> T:
     try:
         return model.model_validate_json(response.content)
@@ -129,4 +142,13 @@ def send_entry(client: httpx.Client, settings: Settings, entry: Entry) -> Sent:
     check_recipient(entry.to)
     payload: dict[str, object] = {"from": SENDER, "to": [entry.to], "subject": entry.subject, "text": entry.text}
     response = _call(client, settings, "POST", "/emails", payload)
+    return Sent(status_code=response.status_code, id=_parse(_Created, response).id)
+
+
+async def send_entry_async(client: httpx.AsyncClient, settings: Settings, entry: Entry) -> Sent:
+    """send_entry for the async client. Both guards run before anything goes out."""
+    check_server(settings)
+    check_recipient(entry.to)
+    payload: dict[str, object] = {"from": SENDER, "to": [entry.to], "subject": entry.subject, "text": entry.text}
+    response = await _call_async(client, settings, "POST", "/emails", payload)
     return Sent(status_code=response.status_code, id=_parse(_Created, response).id)

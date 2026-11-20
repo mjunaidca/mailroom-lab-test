@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 import sys
 import time
@@ -11,10 +12,10 @@ import httpx
 
 from mailroom.checks import check_issue
 from mailroom.issue import Issue, read_issue
-from mailroom.plan import build_plan, write_plan
+from mailroom.plan import Plan, build_plan, write_plan
 from mailroom.problems import InputError, Problem
-from mailroom.resend import Settings, get_status, send_email
-from mailroom.sending import send_all
+from mailroom.resend import Sent, Settings, get_status, send_email
+from mailroom.sending import send_all, send_all_at_once
 from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, next_send, read_subscribers
 
@@ -64,6 +65,13 @@ def send(issue_file: Path, run_date: date) -> int:
     return 0
 
 
+async def send_plan_at_once(
+    plan: Plan, settings: Settings, latency: float, limit: int, transport: httpx.AsyncBaseTransport | None
+) -> list[Sent]:
+    async with httpx.AsyncClient(timeout=10, transport=transport) as client:
+        return await send_all_at_once(plan, settings, client, latency, limit)
+
+
 def send_now(
     issue_file: Path,
     run_date: date,
@@ -85,8 +93,11 @@ def send_now(
         return 1
     plan = build_plan(issue, result.good, run_date)
     started = time.perf_counter()
-    with httpx.Client(timeout=10, transport=transport) as client:
-        sent = send_all(plan, settings, client, latency)
+    if at_once is None:
+        with httpx.Client(timeout=10, transport=transport) as client:
+            sent = send_all(plan, settings, client, latency)
+    else:
+        sent = asyncio.run(send_plan_at_once(plan, settings, latency, at_once, async_transport))
     print(f"Sent {len(sent)} emails in {time.perf_counter() - started:.2f} seconds")
     return 0
 
@@ -114,6 +125,16 @@ def non_negative_seconds(text: str) -> float:
     return seconds
 
 
+def at_least_one(text: str) -> int:
+    try:
+        count = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"at-once must be a whole number, not {text!r}") from None
+    if count < 1:
+        raise argparse.ArgumentTypeError(f"at-once must be at least 1, not {text!r}")
+    return count
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="mailroom.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -132,12 +153,15 @@ def main(argv: list[str]) -> int:
     p_send.add_argument("--dry-run", action="store_true")
     p_send.add_argument("--run-date", type=date.fromisoformat)
     p_send.add_argument("--latency", type=non_negative_seconds, default=0.0)
+    p_send.add_argument("--at-once", type=at_least_one)
     p_one = sub.add_parser("send-one")
     p_one.add_argument("issue_file", type=Path)
     p_one.add_argument("--to", required=True)
     args = parser.parse_args(argv[1:])
     if args.command == "send" and args.dry_run and args.latency:
         parser.error("--latency has no meaning with --dry-run, which sends nothing")
+    if args.command == "send" and args.dry_run and args.at_once:
+        parser.error("--at-once has no meaning with --dry-run, which sends nothing")
 
     if args.command == "check":
         print("\n".join(check_issue(Issue.from_text(args.issue_file.read_text())) or ["OK"]))
@@ -159,7 +183,7 @@ def main(argv: list[str]) -> int:
         if args.command == "send" and args.dry_run:
             return send(args.issue_file, run_date)
         if args.command == "send":
-            return send_now(args.issue_file, run_date, Settings.from_env(os.environ), args.latency)
+            return send_now(args.issue_file, run_date, Settings.from_env(os.environ), args.latency, at_once=args.at_once)
         if args.command == "subscribers":
             return subscribers(run_date, args.since_days)
     except InputError as error:
