@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run pytest
+      - run: uv run pyright
+      - name: Check every issue
+        run: |
+          set -e
+          for f in issues/*.md; do
+            echo "== $f"
+            uv run mailroom check "$f"
+          done
