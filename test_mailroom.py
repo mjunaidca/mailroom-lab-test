@@ -3,6 +3,7 @@ from datetime import date
 from pathlib import Path
 
 from mailroom.checks import check_issue, check_subject
+from mailroom.issue import Issue
 from mailroom.subscribers import joined_since, read_subscribers
 
 
@@ -159,3 +160,15 @@ def test_check_command_prints_each_problem_on_its_own_line(tmp_path: Path) -> No
     lines = run("check", str(bad_issue))
     assert len(lines) == 2
     assert "OK" not in lines
+
+
+def test_issue_01_has_one_link_https_kettlebird_example_steep_club() -> None:
+    issue = Issue.from_text(ISSUE_01.read_text())
+    assert issue.links == ["https://kettlebird.example/steep-club"]
+
+
+def test_personalize_puts_ayesha_where_first_name_was_and_keeps_unsubscribe_url() -> None:
+    personalized = Issue.from_text(ISSUE_01.read_text()).personalize("Ayesha")
+    assert "Hi Ayesha," in personalized.body
+    assert "{{first_name}}" not in personalized.body
+    assert "{{unsubscribe_url}}" in personalized.body
