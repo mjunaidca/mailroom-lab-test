@@ -140,6 +140,32 @@ def test_check_issue_preview_of_91_characters_is_one_problem() -> None:
     assert len(check_issue(Issue.from_text(text))) == 1
 
 
+def test_check_issue_preview_identical_to_the_subject_is_one_problem() -> None:
+    text = issue_01_with(
+        "Preview: Your monthly tea box, chosen by our blenders. Founding members get the first box free.",
+        "Preview: The Steep Club opens Monday",
+    )
+    assert check_issue(Issue.from_text(text)) == ["preview: repeats the subject"]
+
+
+def test_check_issue_without_a_preview_is_not_a_repeat() -> None:
+    text = issue_01_with(
+        "Preview: Your monthly tea box, chosen by our blenders. Founding members get the first box free.\n",
+        "",
+    )
+    assert check_issue(Issue.from_text(text)) == []
+
+
+def test_check_command_prints_the_repeated_preview_problem(tmp_path: Path) -> None:
+    text = issue_01_with(
+        "Preview: Your monthly tea box, chosen by our blenders. Founding members get the first box free.",
+        "Preview: The Steep Club opens Monday",
+    )
+    path = tmp_path / "issue.md"
+    path.write_text(text)
+    assert run("check", str(path)) == ["preview: repeats the subject"]
+
+
 def test_check_issue_without_first_name_is_one_problem() -> None:
     assert len(check_issue(Issue.from_text(issue_01_with("{{first_name}}", "there")))) == 1
 
