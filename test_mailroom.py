@@ -1096,3 +1096,117 @@ def test_report_from_the_command_line_never_shows_a_traceback() -> None:
     result = run_raw("report")
     assert "Traceback" not in result.stderr
     assert result.returncode in (0, 2)
+
+
+# ---- mailroom guard: a Claude Code hook that reads a tool call as JSON on standard input ----
+
+
+def guard(call: dict[str, object]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["uv", "run", "mailroom", "guard"], input=json.dumps(call), capture_output=True, text=True
+    )
+
+
+def send_email_call(**fields: object) -> dict[str, object]:
+    return {"tool_name": "mcp__resend__send-email", "tool_input": {"subject": "Hi", "text": "Hi", **fields}}
+
+
+def test_guard_blocks_sara_at_gmail_with_exit_2_and_a_reason() -> None:
+    result = guard(send_email_call(to=["sara.ali@gmail.com"]))
+    assert result.returncode == 2
+    assert "sara.ali@gmail.com" in result.stderr
+    assert "@example.com or @resend.dev" in result.stderr
+    assert result.stdout == ""
+
+
+def test_guard_lets_delivered_at_resend_dev_through_with_exit_0() -> None:
+    result = guard(send_email_call(to=["delivered@resend.dev"]))
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
+def test_guard_lets_another_tool_through_even_with_a_real_looking_address() -> None:
+    result = guard({"tool_name": "Bash", "tool_input": {"to": ["sara.ali@gmail.com"]}})
+    assert result.returncode == 0
+
+
+def test_guard_knows_the_tool_by_its_bare_name_too() -> None:
+    call = {"tool_name": "send-email", "tool_input": {"to": "sara.ali@gmail.com"}}
+    assert guard(call).returncode == 2
+
+
+def test_guard_checks_cc_and_bcc_not_just_to() -> None:
+    assert guard(send_email_call(to=["delivered@resend.dev"], cc=["a@gmail.com"])).returncode == 2
+    assert guard(send_email_call(to=["delivered@resend.dev"], bcc="b@gmail.com")).returncode == 2
+
+
+def test_guard_reports_every_bad_address_not_just_the_first() -> None:
+    result = guard(send_email_call(to=["a@gmail.com"], cc=["b@example.org"], bcc=["c@resend.dev"]))
+    assert result.returncode == 2
+    assert "a@gmail.com" in result.stderr
+    assert "b@example.org" in result.stderr
+    assert "c@resend.dev" not in result.stderr
+
+
+def test_guard_checks_every_email_in_a_batch() -> None:
+    emails = [{"to": ["delivered@resend.dev"]}, {"to": ["a@example.com"], "bcc": ["sara.ali@gmail.com"]}]
+    result = guard({"tool_name": "mcp__resend__send-batch-emails", "tool_input": {"emails": emails}})
+    assert result.returncode == 2
+    assert "sara.ali@gmail.com" in result.stderr
+
+
+def test_guard_lets_a_clean_batch_through() -> None:
+    emails = [{"to": ["delivered@resend.dev"]}, {"to": "a@example.com", "cc": ["b@example.com"]}]
+    call = {"tool_name": "mcp__resend__send-batch-emails", "tool_input": {"emails": emails}}
+    assert guard(call).returncode == 0
+
+
+def test_guard_with_input_that_is_not_json_is_one_plain_sentence_and_exit_2() -> None:
+    result = subprocess.run(["uv", "run", "mailroom", "guard"], input="nope", capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1
+
+
+# ---- --subscribers on every command that reads subscribers ----
+
+TWO_SUBSCRIBERS = (
+    f"{HEADER}\n"
+    "Ayesha,Khan,ayesha.khan@example.com,tea-curious,2026-09-14,waitlist form\n"
+    "Tom,Becker,tom.becker@example.com,gift-buyers,2026-09-22,waitlist form\n"
+)
+
+
+def test_subscribers_reads_the_file_named_by_subscribers_option(tmp_path: Path) -> None:
+    file = tmp_path / "two.csv"
+    file.write_text(TWO_SUBSCRIBERS)
+    lines = run("subscribers", "--subscribers", str(file))
+    assert lines == ["Total: 2", "tea-curious: 1", "gift-buyers: 1"]
+
+
+def test_subscribers_option_with_a_missing_file_is_one_plain_sentence_and_exit_2(tmp_path: Path) -> None:
+    result = run_raw("subscribers", "--subscribers", str(tmp_path / "none.csv"))
+    assert result.returncode == 2
+    assert "none.csv" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_send_dry_run_reads_the_file_named_by_subscribers_option(tmp_path: Path) -> None:
+    file = tmp_path / "bad.csv"
+    file.write_text(f"{HEADER}\nBob,Ray,not-an-email,tea-curious,2026-09-14,waitlist form\n")
+    result = run_raw("send", str(ISSUE_01), "--dry-run", "--run-date", RUN_DATE, "--subscribers", str(file))
+    assert result.returncode == 1
+    assert "row 2, email" in result.stdout
+
+
+def test_send_with_a_missing_subscribers_file_exits_2_before_sending_anything(tmp_path: Path) -> None:
+    result = run_raw("send", str(ISSUE_01), "--run-date", RUN_DATE, "--subscribers", str(tmp_path / "none.csv"))
+    assert result.returncode == 2
+    assert "none.csv" in result.stderr
+
+
+def test_report_reads_the_file_named_by_subscribers_option(tmp_path: Path) -> None:
+    sent_path = tmp_path / "sent.json"
+    send_all_24(sent_path)
+    with pytest.raises(InputError, match="none.csv"):
+        commands.report(sent_path, tmp_path / "none.csv")
