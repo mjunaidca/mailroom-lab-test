@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -13,6 +14,7 @@ from mailroom.issue import Issue, read_issue
 from mailroom.plan import build_plan, write_plan
 from mailroom.problems import InputError, Problem
 from mailroom.resend import Settings, get_status, send_email
+from mailroom.sending import send_all
 from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, next_send, read_subscribers
 
@@ -69,7 +71,22 @@ def send_now(
     latency: float,
     transport: httpx.BaseTransport | None = None,
 ) -> int:
-    raise NotImplementedError
+    """Check the issue, plan it, send the whole plan one by one, and say how long it took."""
+    issue = read_issue(issue_file)
+    issue_problems = check_issue(issue)
+    if issue_problems:
+        print("\n".join(issue_problems))
+        return 1
+    result = read_subscribers()
+    if result.problems:
+        print_problems(result.problems)
+        return 1
+    plan = build_plan(issue, result.good, run_date)
+    started = time.perf_counter()
+    with httpx.Client(timeout=10, transport=transport) as client:
+        sent = send_all(plan, settings, client, latency)
+    print(f"Sent {len(sent)} emails in {time.perf_counter() - started:.2f} seconds")
+    return 0
 
 
 def send_one(issue_file: Path, to: str, settings: Settings, client: httpx.Client) -> int:
@@ -83,6 +100,16 @@ def send_one(issue_file: Path, to: str, settings: Settings, client: httpx.Client
     print(f"Sent: {sent.status_code} {sent.id}")
     print(f"Status: {get_status(client, settings, sent.id)}")
     return 0
+
+
+def non_negative_seconds(text: str) -> float:
+    try:
+        seconds = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"latency must be a number of seconds, not {text!r}") from None
+    if not seconds >= 0:
+        raise argparse.ArgumentTypeError(f"latency cannot be negative, not {text!r}")
+    return seconds
 
 
 def main(argv: list[str]) -> int:
@@ -100,12 +127,15 @@ def main(argv: list[str]) -> int:
     p_import.add_argument("--run-date", type=date.fromisoformat)
     p_send = sub.add_parser("send")
     p_send.add_argument("issue_file", type=Path)
-    p_send.add_argument("--dry-run", action="store_true", required=True)
+    p_send.add_argument("--dry-run", action="store_true")
     p_send.add_argument("--run-date", type=date.fromisoformat)
+    p_send.add_argument("--latency", type=non_negative_seconds, default=0.0)
     p_one = sub.add_parser("send-one")
     p_one.add_argument("issue_file", type=Path)
     p_one.add_argument("--to", required=True)
     args = parser.parse_args(argv[1:])
+    if args.command == "send" and args.dry_run and args.latency:
+        parser.error("--latency has no meaning with --dry-run, which sends nothing")
 
     if args.command == "check":
         print("\n".join(check_issue(Issue.from_text(args.issue_file.read_text())) or ["OK"]))
@@ -124,8 +154,10 @@ def main(argv: list[str]) -> int:
     try:
         if args.command == "import":
             return import_file(args.file, run_date)
-        if args.command == "send":
+        if args.command == "send" and args.dry_run:
             return send(args.issue_file, run_date)
+        if args.command == "send":
+            return send_now(args.issue_file, run_date, Settings.from_env(os.environ), args.latency)
         if args.command == "subscribers":
             return subscribers(run_date, args.since_days)
     except InputError as error:

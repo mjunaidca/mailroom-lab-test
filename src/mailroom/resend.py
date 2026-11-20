@@ -7,6 +7,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from mailroom.issue import Issue
+from mailroom.plan import Entry
 from mailroom.problems import InputError
 
 DEFAULT_URL = "http://localhost:4000"
@@ -61,22 +62,12 @@ class _Refusal(BaseModel):
     message: str
 
 
-def _call(
-    client: httpx.Client,
-    settings: Settings,
-    method: str,
-    path: str,
-    json: dict[str, object] | None = None,
-    unknown_id: str | None = None,
-) -> httpx.Response:
-    """One request to the server, made exactly once: a 4xx is the server's final answer, so it is never retried.
-    Each failure is handled on purpose and becomes one plain sentence."""
-    try:
-        response = client.request(
-            method, settings.url.rstrip("/") + path, json=json, headers={"Authorization": f"Bearer {settings.key}"}
-        )
-    except httpx.TransportError:
-        raise InputError(f"The practice server is not running at {settings.url}. Start it with: {START_COMMAND}") from None
+def _unreachable(settings: Settings) -> InputError:
+    return InputError(f"The practice server is not running at {settings.url}. Start it with: {START_COMMAND}")
+
+
+def _answer(response: httpx.Response, method: str, path: str, unknown_id: str | None) -> httpx.Response:
+    """Handle each status on purpose. A 4xx is the server's final answer, so nothing here ever retries."""
     status = response.status_code
     if status == 422:
         try:
@@ -89,6 +80,24 @@ def _call(
     if status >= 400:
         raise InputError(f"The practice server answered {status} to {method} {path}.")
     return response
+
+
+def _call(
+    client: httpx.Client,
+    settings: Settings,
+    method: str,
+    path: str,
+    json: dict[str, object] | None = None,
+    unknown_id: str | None = None,
+) -> httpx.Response:
+    """One request to the server, made exactly once. Each failure becomes one plain sentence."""
+    try:
+        response = client.request(
+            method, settings.url.rstrip("/") + path, json=json, headers={"Authorization": f"Bearer {settings.key}"}
+        )
+    except httpx.TransportError:
+        raise _unreachable(settings) from None
+    return _answer(response, method, path, unknown_id)
 
 
 def _parse[T: BaseModel](model: type[T], response: httpx.Response) -> T:
@@ -112,3 +121,12 @@ def get_status(client: httpx.Client, settings: Settings, email_id: str) -> str:
     """Ask the server what happened to an email."""
     check_server(settings)
     return _parse(_Fetched, _call(client, settings, "GET", f"/emails/{email_id}", unknown_id=email_id)).last_event
+
+
+def send_entry(client: httpx.Client, settings: Settings, entry: Entry) -> Sent:
+    """Send one planned email. Both guards run before anything goes out."""
+    check_server(settings)
+    check_recipient(entry.to)
+    payload: dict[str, object] = {"from": SENDER, "to": [entry.to], "subject": entry.subject, "text": entry.text}
+    response = _call(client, settings, "POST", "/emails", payload)
+    return Sent(status_code=response.status_code, id=_parse(_Created, response).id)

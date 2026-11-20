@@ -639,4 +639,4 @@ def test_send_with_a_negative_latency_is_refused_with_exit_2() -> None:
     result = run_raw("send", "issues/issue-01.md", "--run-date", SEND_DATE, "--latency=-1")
     assert result.returncode == 2
     assert result.stdout == ""
-    assert "latency" in result.stderr and "dry-run" not in result.stderr
+    assert "error: argument --latency: latency cannot be negative" in result.stderr
