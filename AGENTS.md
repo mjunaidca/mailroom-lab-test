@@ -25,3 +25,4 @@ Mailroom is a command-line tool for one newsletter: Kettlebird Tea's Steep Club.
 - Retry only what can succeed later: no connection, a timeout, a 429 or a 5xx. At most 3 tries in all, with growing waits (0.5 s, then 1 s). Never retry any other 4xx; it is the server's final answer. Anything else that goes wrong is not retried either.
 - Every send has an idempotency key, made from the issue and the recipient, and every try of one email carries the same key. That is what makes a retry safe: the server sends one email per key, and the same key with a different email gets a 409.
 - The checks must pass before a merge. The CI workflow (`.github/workflows/ci.yml`) runs `uv sync`, `uv run pytest`, `uv run pyright` and `uv run mailroom check` on every issue; `main` is protected and requires a pull request and the passing `checks` check.
+- Undo a bad merge with a revert pull request (never a push to `main`), then add the test that would have caught it.
