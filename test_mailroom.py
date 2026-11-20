@@ -1,12 +1,12 @@
 import subprocess
 from pathlib import Path
 
-from mailroom import check_issue, check_subject
+from mailroom.checks import check_issue, check_subject
 
 
 def run(*args):
     result = subprocess.run(
-        ["uv", "run", "mailroom.py", *args], capture_output=True, text=True
+        ["uv", "run", "mailroom", *args], capture_output=True, text=True
     )
     assert result.returncode == 0, f"mailroom.py failed: {result.stderr.strip()}"
     return result.stdout.splitlines()
