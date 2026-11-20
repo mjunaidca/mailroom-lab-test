@@ -28,6 +28,10 @@ def next_send(run_date):
     return first + timedelta(days=(7 - first.weekday()) % 7)
 
 
+def check_subject(issue_text):
+    raise NotImplementedError
+
+
 def subscribers(run_date, since_days=None):
     rows = read_subscribers()
     if since_days is not None:

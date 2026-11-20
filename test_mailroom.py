@@ -1,5 +1,7 @@
 import subprocess
 
+from mailroom import check_subject
+
 
 def run(*args):
     result = subprocess.run(
@@ -36,3 +38,39 @@ def test_next_send_from_2026_11_20_is_2026_12_07():
 
 def test_next_send_on_a_send_day_moves_to_the_following_send_2027_01_04():
     assert run("next-send", "--run-date", "2026-12-07") == ["Next send: 2027-01-04"]
+
+
+def issue(subject_line):
+    """Build issue text. Pass None for an issue with no Subject line at all."""
+    body = "Hello, Steep Clubbers.\n"
+    if subject_line is None:
+        return body
+    return f"Subject: {subject_line}\n\n{body}"
+
+
+def test_check_subject_short_subject_has_no_problems():
+    assert check_subject(issue("The Steep Club opens Monday")) == []
+
+
+def test_check_subject_of_exactly_50_characters_has_no_problems():
+    subject = "Your Steep Club box ships on Monday with new teas."
+    assert len(subject) == 50
+    assert check_subject(issue(subject)) == []
+
+
+def test_check_subject_of_51_characters_is_too_long():
+    subject = "Your Steep Club box ships on Monday with fresh teas"
+    assert len(subject) == 51
+    assert check_subject(issue(subject)) == ["too long"]
+
+
+def test_check_subject_empty_is_one_problem_empty():
+    assert check_subject(issue("")) == ["empty"]
+
+
+def test_check_subject_of_only_spaces_is_one_problem_empty():
+    assert check_subject(issue("   ")) == ["empty"]
+
+
+def test_check_subject_missing_is_one_problem_missing():
+    assert check_subject(issue(None)) == ["missing"]
