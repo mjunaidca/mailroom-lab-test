@@ -124,3 +124,18 @@ def test_check_issue_without_footer_and_without_greeting_is_two_problems():
     text = issue_01_with(footer, "")
     text = text.replace("{{first_name}}", "there")
     assert len(check_issue(text)) == 2
+
+
+def test_check_command_on_issue_01_prints_ok():
+    assert run("check", "issues/issue-01.md") == ["OK"]
+
+
+def test_check_command_prints_each_problem_on_its_own_line(tmp_path):
+    text = issue_01_with("{{first_name}}", "there").replace(
+        "Unsubscribe: {{unsubscribe_url}}", ""
+    )
+    bad_issue = tmp_path / "bad-issue.md"
+    bad_issue.write_text(text)
+    lines = run("check", str(bad_issue))
+    assert len(lines) == 2
+    assert "OK" not in lines
