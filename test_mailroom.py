@@ -1,17 +1,26 @@
 import json
+import os
 import subprocess
 from datetime import date
 from pathlib import Path
 
+import httpx
+import pytest
+
+from mailroom import commands, resend
 from mailroom.checks import check_issue, check_subject
 from mailroom.issue import Issue
+from mailroom.problems import InputError
 from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, read_subscribers
 
 
-def run_raw(*args: str) -> subprocess.CompletedProcess[str]:
+def run_raw(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["uv", "run", "mailroom", *args], capture_output=True, text=True
+        ["uv", "run", "mailroom", *args],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **(env or {})},
     )
 
 
@@ -339,3 +348,156 @@ def test_send_with_no_issue_file_says_so_in_one_sentence_and_exits_2() -> None:
 def test_outbox_is_kept_out_of_git() -> None:
     ignored = subprocess.run(["git", "check-ignore", "-q", "outbox/plan.json"])
     assert ignored.returncode == 0
+
+
+# --- send-one: one email to the practice server (no test needs the server) ---
+
+ISSUE_01 = Path(__file__).parent / "issues" / "issue-01.md"
+PRACTICE = resend.Settings(url="http://localhost:4000", key="re_practice")
+
+
+def fake_server(seen: list[httpx.Request], status: int = 200) -> httpx.Client:
+    """A stand-in for the practice server. Records every request it gets."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if status != 200:
+            return httpx.Response(status, json={"message": "no"})
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "em_123"})
+        return httpx.Response(200, json={"id": "em_123", "last_event": "delivered"})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_settings_default_to_localhost_4000_and_re_practice() -> None:
+    settings = resend.Settings.from_env({})
+    assert settings.url == "http://localhost:4000"
+    assert settings.key == "re_practice"
+
+
+def test_settings_come_from_resend_api_url_and_resend_api_key() -> None:
+    settings = resend.Settings.from_env({"RESEND_API_URL": "http://localhost:9999", "RESEND_API_KEY": "re_other"})
+    assert settings.url == "http://localhost:9999"
+    assert settings.key == "re_other"
+
+
+def test_send_email_posts_to_emails_with_from_to_subject_text_and_a_bearer_key() -> None:
+    seen: list[httpx.Request] = []
+    resend.send_email(fake_server(seen), PRACTICE, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert len(seen) == 1
+    request = seen[0]
+    assert request.method == "POST"
+    assert str(request.url) == "http://localhost:4000/emails"
+    assert request.headers["Authorization"] == "Bearer re_practice"
+    body = json.loads(request.content)
+    assert body["from"] == "onboarding@resend.dev"
+    assert body["to"] == ["delivered@resend.dev"]
+    assert body["subject"] == "The Steep Club opens Monday"
+    assert "{{first_name}}" not in body["text"]
+
+
+def test_send_email_gives_back_the_status_code_and_the_id() -> None:
+    sent = resend.send_email(fake_server([]), PRACTICE, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert sent == resend.Sent(status_code=200, id="em_123")
+
+
+def test_get_status_gets_the_email_back_and_reads_its_last_event() -> None:
+    seen: list[httpx.Request] = []
+    status = resend.get_status(fake_server(seen), PRACTICE, "em_123")
+    assert status == "delivered"
+    assert seen[0].method == "GET"
+    assert str(seen[0].url) == "http://localhost:4000/emails/em_123"
+    assert seen[0].headers["Authorization"] == "Bearer re_practice"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.resend.com",
+        "http://localhost.evil.com:4000",
+        "http://localhost@evil.com:4000",
+        "http://evil.com/localhost",
+    ],
+)
+def test_send_email_refuses_a_server_that_is_not_localhost_and_sends_nothing(url: str) -> None:
+    seen: list[httpx.Request] = []
+    settings = resend.Settings(url=url, key="re_practice")
+    with pytest.raises(InputError):
+        resend.send_email(fake_server(seen), settings, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert seen == []
+
+
+def test_get_status_refuses_a_server_that_is_not_localhost_and_asks_nothing() -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError):
+        resend.get_status(fake_server(seen), resend.Settings(url="https://api.resend.com", key="k"), "em_123")
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    "to",
+    ["someone@gmail.com", "x@example.com.evil.com", "x@sub.example.com", "example.com", "a@b@example.com"],
+)
+def test_send_email_refuses_a_recipient_not_at_example_com_or_resend_dev_and_sends_nothing(to: str) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError):
+        resend.send_email(fake_server(seen), PRACTICE, to, Issue.from_text(ISSUE_01.read_text()))
+    assert seen == []
+
+
+@pytest.mark.parametrize("to", ["delivered@resend.dev", "maria@example.com", "Maria@Example.COM"])
+def test_send_email_accepts_a_recipient_at_example_com_or_resend_dev(to: str) -> None:
+    seen: list[httpx.Request] = []
+    resend.send_email(fake_server(seen), PRACTICE, to, Issue.from_text(ISSUE_01.read_text()))
+    assert len(seen) == 1
+
+
+def test_send_email_when_the_server_says_no_is_one_plain_sentence_with_the_code() -> None:
+    with pytest.raises(InputError, match="401") as error:
+        resend.send_email(fake_server([], status=401), PRACTICE, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert "\n" not in str(error.value)
+
+
+def test_send_email_when_the_server_is_not_running_is_one_plain_sentence() -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(refuse))
+    with pytest.raises(InputError, match="localhost:4000") as error:
+        resend.send_email(client, PRACTICE, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert "\n" not in str(error.value)
+
+
+def test_send_one_command_prints_the_status_code_and_the_id_then_the_status(capsys: pytest.CaptureFixture[str]) -> None:
+    code = commands.send_one(ISSUE_01, "delivered@resend.dev", PRACTICE, fake_server([]))
+    assert code == 0
+    assert capsys.readouterr().out.splitlines() == ["Sent: 200 em_123", "Status: delivered"]
+
+
+def test_send_one_command_with_an_issue_that_fails_the_check_sends_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    bad_issue = tmp_path / "bad-issue.md"
+    bad_issue.write_text(issue_01_with("{{first_name}}", "there"))
+    seen: list[httpx.Request] = []
+    code = commands.send_one(bad_issue, "delivered@resend.dev", PRACTICE, fake_server(seen))
+    assert code == 1
+    assert "greeting: missing {{first_name}}" in capsys.readouterr().out
+    assert seen == []
+
+
+def test_send_one_from_the_command_line_refuses_a_server_that_is_not_localhost_with_one_sentence_and_exit_2() -> None:
+    result = run_raw(
+        "send-one", "issues/issue-01.md", "--to", "delivered@resend.dev",
+        env={"RESEND_API_URL": "https://api.resend.com"},
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert len(result.stderr.strip().splitlines()) == 1
+
+
+def test_send_one_from_the_command_line_refuses_a_real_recipient_with_one_sentence_and_exit_2() -> None:
+    result = run_raw("send-one", "issues/issue-01.md", "--to", "someone@gmail.com")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "someone@gmail.com" in result.stderr
