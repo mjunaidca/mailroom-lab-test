@@ -172,3 +172,50 @@ def test_personalize_puts_ayesha_where_first_name_was_and_keeps_unsubscribe_url(
     assert "Hi Ayesha," in personalized.body
     assert "{{first_name}}" not in personalized.body
     assert "{{unsubscribe_url}}" in personalized.body
+
+
+NEW_SIGNUPS = "data/new-signups.csv"
+
+
+def import_line_for(first_name: str) -> str:
+    lines = [l for l in run("import", NEW_SIGNUPS) if first_name in l]
+    assert len(lines) == 1, f"expected one line for {first_name}, got {lines}"
+    return lines[0]
+
+
+def test_import_accepts_maria() -> None:
+    assert import_line_for("Maria").startswith("accepted")
+
+
+def test_import_accepts_sara() -> None:
+    assert import_line_for("Sara").startswith("accepted")
+
+
+def test_import_accepts_tom() -> None:
+    assert import_line_for("Tom").startswith("accepted")
+
+
+def test_import_accepts_ines() -> None:
+    assert import_line_for("Ines").startswith("accepted")
+
+
+def test_import_rejects_omar() -> None:
+    assert import_line_for("Omar").startswith("rejected")
+
+
+def test_import_rejects_lena() -> None:
+    assert import_line_for("Lena").startswith("rejected")
+
+
+def test_import_rejects_kofi() -> None:
+    assert import_line_for("Kofi").startswith("rejected")
+
+
+def test_import_rejects_hana() -> None:
+    assert import_line_for("Hana").startswith("rejected")
+
+
+def test_import_rejected_lines_give_a_reason() -> None:
+    for name in ("Omar", "Lena", "Kofi", "Hana"):
+        _, _, reason = import_line_for(name).partition(" - ")
+        assert reason.strip(), f"{name} was rejected with no reason"
