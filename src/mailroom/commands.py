@@ -22,8 +22,8 @@ def subscribers(run_date: date, since_days: int | None = None) -> None:
         print(f"{group}: {count}")
 
 
-def import_file(path: Path) -> None:
-    for result in import_signups(path):
+def import_file(path: Path, run_date: date) -> None:
+    for result in import_signups(path, run_date):
         if result.reasons:
             print(f"rejected: {result.name} - {'; '.join(result.reasons)}")
         else:
@@ -45,16 +45,15 @@ def main(argv: list[str]) -> int:
     p_import.add_argument("--run-date", type=date.fromisoformat)
     args = parser.parse_args(argv[1:])
 
-    if args.command == "import":
-        import_file(args.file)
-        return 0
-
     if args.command == "check":
         print("\n".join(check_issue(Issue.from_text(args.issue_file.read_text())) or ["OK"]))
         return 0
 
     # The command line is the only place that reads today's date.
     run_date = args.run_date or date.today()
+    if args.command == "import":
+        import_file(args.file, run_date)
+        return 0
     if args.command == "subscribers":
         subscribers(run_date, args.since_days)
     else:
