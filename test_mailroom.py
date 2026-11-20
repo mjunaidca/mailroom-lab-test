@@ -4,14 +4,19 @@ from pathlib import Path
 
 from mailroom.checks import check_issue, check_subject
 from mailroom.issue import Issue
+from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, read_subscribers
 
 
-def run(*args: str) -> list[str]:
-    result = subprocess.run(
+def run_raw(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["uv", "run", "mailroom", *args], capture_output=True, text=True
     )
-    assert result.returncode == 0, f"mailroom.py failed: {result.stderr.strip()}"
+
+
+def run(*args: str, code: int = 0) -> list[str]:
+    result = run_raw(*args)
+    assert result.returncode == code, f"mailroom.py failed: {result.stderr.strip()}"
     return result.stdout.splitlines()
 
 
@@ -37,7 +42,7 @@ def test_subscribers_counts_7_joined_in_last_30_days() -> None:
 
 
 def test_joined_since_counts_7_joined_in_30_days_up_to_date_2026_11_20() -> None:
-    people = read_subscribers()
+    people = read_subscribers().good
     assert len(joined_since(people, date(2026, 11, 20), 30)) == 7
 
 
@@ -179,7 +184,7 @@ RUN_DATE = "2026-11-20"
 
 
 def import_line_for(first_name: str) -> str:
-    lines = [l for l in run("import", NEW_SIGNUPS, "--run-date", RUN_DATE) if first_name in l]
+    lines = [l for l in run("import", NEW_SIGNUPS, "--run-date", RUN_DATE, code=1) if first_name in l]
     assert len(lines) == 1, f"expected one line for {first_name}, got {lines}"
     return lines[0]
 
@@ -220,3 +225,71 @@ def test_import_rejected_lines_give_a_reason() -> None:
     for name in ("Omar", "Lena", "Kofi", "Hana", "Sara", "Tom"):
         _, _, reason = import_line_for(name).partition(" - ")
         assert reason.strip(), f"{name} was rejected with no reason"
+
+
+HEADER = "first_name,last_name,email,group,joined_on,consent"
+
+
+def test_read_signups_gives_2_good_subscribers_and_6_problems() -> None:
+    result = read_signups(Path(NEW_SIGNUPS), date(2026, 11, 20))
+    assert len(result.good) == 2
+    assert len(result.problems) == 6
+
+
+def test_read_signups_problems_name_their_row_and_field() -> None:
+    # Row 1 is the header line, so Maria is row 2 and Omar is row 3.
+    result = read_signups(Path(NEW_SIGNUPS), date(2026, 11, 20))
+    assert [(p.row, p.field) for p in result.problems] == [
+        (3, "email"),  # Omar: no email
+        (4, "consent"),  # Lena: no consent
+        (5, "group"),  # Kofi: "Gift Buyers"
+        (6, "joined_on"),  # Hana: 21/10/2026
+        (7, "email"),  # Sara: not @example.com
+        (8, "joined_on"),  # Tom: after the run date
+    ]
+
+
+def test_read_subscribers_reports_every_bad_row_instead_of_raising(tmp_path: Path) -> None:
+    bad = tmp_path / "subs.csv"
+    bad.write_text(
+        f"{HEADER}\n"
+        "Ayesha,Khan,ayesha.khan@example.com,tea-curious,2026-09-14,waitlist form\n"
+        "Bob,Ray,not-an-email,tea-curious,2026-09-14,waitlist form\n"
+        "Cy,Lo,cy.lo@example.com,nope,2026-09-14,\n"
+    )
+    result = read_subscribers(bad)
+    assert len(result.good) == 1
+    assert [(p.row, p.field) for p in result.problems] == [
+        (3, "email"),
+        (4, "group"),
+        (4, "consent"),
+    ]
+
+
+def test_import_prints_every_problem_with_its_row_and_exits_1() -> None:
+    result = run_raw("import", NEW_SIGNUPS, "--run-date", RUN_DATE)
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    rejected = [l for l in result.stdout.splitlines() if l.startswith("rejected")]
+    assert len(rejected) == 6
+    assert "row 3" in import_line_for("Omar")
+    assert "email" in import_line_for("Omar")
+
+
+def test_import_with_no_file_says_so_in_one_sentence_and_exits_2() -> None:
+    result = run_raw("import", "data/nope.csv", "--run-date", RUN_DATE)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "data/nope.csv" in result.stderr
+
+
+def test_import_with_wrong_columns_says_so_in_one_sentence_and_exits_2(tmp_path: Path) -> None:
+    wrong = tmp_path / "wrong.csv"
+    wrong.write_text("name,mail\nMaria,maria@example.com\n")
+    result = run_raw("import", str(wrong), "--run-date", RUN_DATE)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "Traceback" not in result.stderr
+    assert "first_name" in result.stderr
