@@ -13,7 +13,7 @@ import pytest
 from mailroom import commands, resend, sending
 from mailroom.checks import check_issue, check_subject
 from mailroom.issue import Issue
-from mailroom.plan import Entry, Plan
+from mailroom.plan import Entry, Plan, build_plan
 from mailroom.problems import InputError
 from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, read_subscribers
@@ -498,7 +498,7 @@ def test_a_404_on_an_email_id_says_the_id_is_unknown() -> None:
     assert "\n" not in str(error.value)
 
 
-@pytest.mark.parametrize("status", [400, 401, 404, 409, 422, 429])
+@pytest.mark.parametrize("status", [400, 401, 404, 409, 422])
 def test_no_4xx_is_ever_retried(status: int) -> None:
     seen: list[httpx.Request] = []
     with pytest.raises(InputError):
@@ -555,7 +555,7 @@ def test_send_one_from_the_command_line_refuses_a_real_recipient_with_one_senten
 
 
 def plan_of(count: int) -> Plan:
-    entries = [Entry(to=f"person{i}@example.com", subject="Hello", text=f"Hi {i}") for i in range(count)]
+    entries = [Entry(to=f"person{i}@example.com", subject="Hello", text=f"Hi {i}", key=f"key-{i}") for i in range(count)]
     return Plan(run_date=date(2026, 12, 7), entries=entries)
 
 
@@ -600,7 +600,7 @@ def test_send_all_refuses_a_server_that_is_not_localhost_and_sends_nothing(url: 
 
 def test_send_all_with_a_real_address_anywhere_in_the_plan_sends_nothing() -> None:
     plan = plan_of(3)
-    plan.entries[2] = Entry(to="someone@gmail.com", subject="Hello", text="Hi")
+    plan.entries[2] = Entry(to="someone@gmail.com", subject="Hello", text="Hi", key="key-x")
     seen: list[httpx.Request] = []
     with pytest.raises(InputError, match="someone@gmail.com"):
         sending.send_all(plan, PRACTICE, echo_server(seen), 0)
@@ -721,7 +721,7 @@ def test_at_once_waits_the_latency_before_each_request_but_the_waits_overlap() -
 
 def test_at_once_with_a_real_address_anywhere_in_the_plan_sends_nothing() -> None:
     plan = plan_of(8)
-    plan.entries[7] = Entry(to="someone@gmail.com", subject="Hello", text="Hi")
+    plan.entries[7] = Entry(to="someone@gmail.com", subject="Hello", text="Hi", key="key-x")
     seen: list[httpx.Request] = []
     with pytest.raises(InputError, match="someone@gmail.com"):
         send_at_once(plan, async_echo_server(Busy(), seen))
@@ -762,3 +762,227 @@ def test_send_at_once_from_the_command_line_refuses_a_server_that_is_not_localho
     assert result.returncode == 2
     assert result.stdout == ""
     assert len(result.stderr.strip().splitlines()) == 1
+
+
+# --- retry (only what can succeed later) and idempotency keys (so a retry cannot send twice) ---
+
+
+@pytest.fixture(autouse=True)
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """No test really waits between tries. Every wait that was asked for is recorded here, in order."""
+    asked: list[float] = []
+
+    async def pause_async(seconds: float) -> None:
+        asked.append(seconds)
+
+    monkeypatch.setattr(resend, "pause", asked.append, raising=False)
+    monkeypatch.setattr(resend, "pause_async", pause_async, raising=False)
+    return asked
+
+
+Outcome = int | type[httpx.TransportError]
+
+
+def answer(outcome: Outcome | None, request: httpx.Request) -> httpx.Response:
+    if outcome is None:
+        return httpx.Response(200, json={"id": "em_123"})
+    if isinstance(outcome, int):
+        return httpx.Response(outcome, json={"message": "no"})
+    raise outcome("scripted", request=request)
+
+
+def scripted(seen: list[httpx.Request], *outcomes: Outcome) -> httpx.Client:
+    """Answers the first request with the first outcome, the second with the second, and so on; then 200."""
+    remaining = list(outcomes)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return answer(remaining.pop(0) if remaining else None, request)
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def scripted_async(seen: list[httpx.Request], *outcomes: Outcome) -> httpx.AsyncClient:
+    remaining = list(outcomes)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return answer(remaining.pop(0) if remaining else None, request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+ENTRY = Entry(to="delivered@resend.dev", subject="Hello", text="Hi", key="key-1")
+ISSUE = Issue.from_text(ISSUE_01.read_text())
+
+RETRYABLE: list[Outcome] = [429, 500, 502, 503, httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout]
+
+
+@pytest.mark.parametrize("outcome", RETRYABLE)
+def test_a_failure_that_can_succeed_later_is_tried_again_after_a_wait_and_then_succeeds(
+    outcome: Outcome, waits: list[float]
+) -> None:
+    seen: list[httpx.Request] = []
+    sent = resend.send_entry(scripted(seen, outcome), PRACTICE, ENTRY)
+    assert sent.id == "em_123"
+    assert len(seen) == 2
+    assert len(waits) == 1
+    assert waits[0] > 0
+
+
+def test_it_gives_up_after_3_tries_in_all_with_growing_waits_and_the_last_5xx_sentence(waits: list[float]) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError, match="503") as error:
+        resend.send_entry(scripted(seen, 503, 503, 503, 503), PRACTICE, ENTRY)
+    assert len(seen) == 3
+    assert len(waits) == 2
+    assert 0 < waits[0] < waits[1]
+    assert "\n" not in str(error.value)
+
+
+def test_a_429_that_keeps_coming_gives_up_after_3_tries(waits: list[float]) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError, match="429"):
+        resend.send_entry(scripted(seen, 429, 429, 429, 429), PRACTICE, ENTRY)
+    assert len(seen) == 3
+
+
+def test_no_connection_3_times_still_says_the_server_is_not_running_and_how_to_start_it() -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError, match="not running") as error:
+        resend.send_entry(scripted(seen, *[httpx.ConnectError] * 4), PRACTICE, ENTRY)
+    assert len(seen) == 3
+    assert START_COMMAND in str(error.value)
+
+
+def test_a_timeout_3_times_says_the_server_did_not_answer_in_time_not_that_it_is_not_running() -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError, match="did not answer in time") as error:
+        resend.send_entry(scripted(seen, *[httpx.ReadTimeout] * 4), PRACTICE, ENTRY)
+    assert len(seen) == 3
+    assert "not running" not in str(error.value)
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 409, 422])
+def test_a_send_that_gets_a_4xx_is_sent_once_and_never_retried(status: int, waits: list[float]) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError):
+        resend.send_entry(scripted(seen, status), PRACTICE, ENTRY)
+    assert len(seen) == 1
+    assert waits == []
+
+
+def test_a_failure_that_is_neither_no_connection_nor_a_timeout_is_not_retried() -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError):
+        resend.send_entry(scripted(seen, httpx.ReadError), PRACTICE, ENTRY)
+    assert len(seen) == 1
+
+
+def test_a_first_try_that_works_never_waits(waits: list[float]) -> None:
+    seen: list[httpx.Request] = []
+    resend.send_entry(scripted(seen), PRACTICE, ENTRY)
+    assert len(seen) == 1
+    assert waits == []
+
+
+def test_asking_the_status_of_an_email_is_retried_the_same_way() -> None:
+    seen: list[httpx.Request] = []
+    client = scripted(seen, 503)
+    with pytest.raises(InputError):  # the scripted 200 answer has no last_event, which is a different problem
+        resend.get_status(client, PRACTICE, "em_123")
+    assert len(seen) == 2
+
+
+def test_the_async_send_retries_the_same_way(waits: list[float]) -> None:
+    seen: list[httpx.Request] = []
+
+    async def go() -> resend.Sent:
+        async with scripted_async(seen, 503, httpx.ConnectError) as client:
+            return await resend.send_entry_async(client, PRACTICE, ENTRY)
+
+    assert asyncio.run(go()).id == "em_123"
+    assert len(seen) == 3
+    assert 0 < waits[0] < waits[1]
+
+
+def test_the_async_send_never_retries_a_4xx(waits: list[float]) -> None:
+    seen: list[httpx.Request] = []
+
+    async def go() -> resend.Sent:
+        async with scripted_async(seen, 409) as client:
+            return await resend.send_entry_async(client, PRACTICE, ENTRY)
+
+    with pytest.raises(InputError):
+        asyncio.run(go())
+    assert len(seen) == 1
+    assert waits == []
+
+
+def key_of(request: httpx.Request) -> str | None:
+    return request.headers.get("Idempotency-Key")
+
+
+def test_send_entry_sends_the_entrys_key_as_the_idempotency_key() -> None:
+    seen: list[httpx.Request] = []
+    resend.send_entry(scripted(seen), PRACTICE, ENTRY)
+    assert key_of(seen[0]) == "key-1"
+
+
+def test_send_email_sends_an_idempotency_key() -> None:
+    seen: list[httpx.Request] = []
+    resend.send_email(scripted(seen), PRACTICE, "delivered@resend.dev", ISSUE)
+    assert key_of(seen[0])
+
+
+def test_the_async_send_sends_the_entrys_key_as_the_idempotency_key() -> None:
+    seen: list[httpx.Request] = []
+
+    async def go() -> resend.Sent:
+        async with scripted_async(seen) as client:
+            return await resend.send_entry_async(client, PRACTICE, ENTRY)
+
+    asyncio.run(go())
+    assert key_of(seen[0]) == "key-1"
+
+
+def test_every_try_of_one_email_carries_the_same_key() -> None:
+    seen: list[httpx.Request] = []
+    resend.send_entry(scripted(seen, 503, httpx.ReadTimeout), PRACTICE, ENTRY)
+    assert [key_of(r) for r in seen] == ["key-1", "key-1", "key-1"]
+
+
+def test_asking_for_a_status_sends_no_idempotency_key() -> None:
+    seen: list[httpx.Request] = []
+    resend.get_status(fake_server(seen), PRACTICE, "em_123")
+    assert key_of(seen[0]) is None
+
+
+SUBSCRIBERS_24 = read_subscribers().good
+
+
+def plan_for(issue: Issue) -> Plan:
+    return build_plan(issue, SUBSCRIBERS_24, date(2026, 12, 7))
+
+
+def test_the_plan_gives_every_email_its_own_key() -> None:
+    keys = [e.key for e in plan_for(ISSUE).entries]
+    assert len(keys) == 24
+    assert len(set(keys)) == 24
+    assert all(keys)
+
+
+def test_the_same_issue_and_recipient_make_the_same_key_on_another_day() -> None:
+    later = build_plan(ISSUE, SUBSCRIBERS_24, date(2027, 1, 1))
+    assert [e.key for e in later.entries] == [e.key for e in plan_for(ISSUE).entries]
+
+
+def test_another_issue_makes_another_key_for_the_same_recipient() -> None:
+    other = Issue(subject="A different issue", preview=ISSUE.preview, body=ISSUE.body)
+    assert not set(e.key for e in plan_for(other).entries) & set(e.key for e in plan_for(ISSUE).entries)
+
+
+def test_the_key_is_at_most_256_characters_and_does_not_contain_the_address() -> None:
+    for entry in plan_for(ISSUE).entries:
+        assert 0 < len(entry.key) <= 256
+        assert "@" not in entry.key
