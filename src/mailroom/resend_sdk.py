@@ -18,5 +18,5 @@ def send_entry_sdk(settings: Settings, entry: Entry) -> Sent:
         "subject": entry.subject,
         "text": entry.text,
     }
-    created = resend_sdk.Emails.send(params)
+    created = resend_sdk.Emails.send(params, {"idempotency_key": entry.key})
     return Sent(status_code=200, id=created["id"])  # the package does not hand back the status code

@@ -1,5 +1,7 @@
 """Talking to the practice mail server. Sending works only against localhost, and only to practice addresses."""
 
+import asyncio
+import time
 from collections.abc import Mapping
 from urllib.parse import urlsplit
 
@@ -7,13 +9,26 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from mailroom.issue import Issue
-from mailroom.plan import Entry
+from mailroom.plan import Entry, idempotency_key
 from mailroom.problems import InputError
 
 DEFAULT_URL = "http://localhost:4000"
 DEFAULT_KEY = "re_practice"
 START_COMMAND = "npx emulate@0.12.3 start --service resend"
 SENDER = "onboarding@resend.dev"
+# Retry only what can succeed later: no connection, a timeout, a 429 or a 5xx. The waits between tries grow,
+# and 3 tries in all. Every send carries an idempotency key, so a try that did arrive is never sent twice.
+WAITS = (0.5, 1.0)
+
+
+def pause(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+async def pause_async(seconds: float) -> None:
+    await asyncio.sleep(seconds)
+
+
 ALLOWED_RECIPIENT_DOMAINS = ("example.com", "resend.dev")
 # The test address has no first name, so the greeting reads "Hi there,".
 STAND_IN_NAME = "there"
@@ -66,8 +81,22 @@ def _unreachable(settings: Settings) -> InputError:
     return InputError(f"The practice server is not running at {settings.url}. Start it with: {START_COMMAND}")
 
 
+def _failed(settings: Settings, error: httpx.TransportError) -> InputError:
+    if isinstance(error, httpx.TimeoutException):
+        return InputError(f"The practice server did not answer in time at {settings.url}.")
+    return _unreachable(settings)
+
+
+def _can_succeed_later(error: httpx.TransportError) -> bool:
+    return isinstance(error, httpx.ConnectError | httpx.TimeoutException)
+
+
+def _status_can_succeed_later(status: int) -> bool:
+    return status == 429 or status >= 500
+
+
 def _answer(response: httpx.Response, method: str, path: str, unknown_id: str | None) -> httpx.Response:
-    """Handle each status on purpose. A 4xx is the server's final answer, so nothing here ever retries."""
+    """Handle each status on purpose. A 4xx is the server's final answer, so nothing here ever retries it."""
     status = response.status_code
     if status == 422:
         try:
@@ -82,6 +111,13 @@ def _answer(response: httpx.Response, method: str, path: str, unknown_id: str | 
     return response
 
 
+def _headers(settings: Settings, key: str | None) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {settings.key}"}
+    if key is not None:
+        headers["Idempotency-Key"] = key
+    return headers
+
+
 def _call(
     client: httpx.Client,
     settings: Settings,
@@ -89,28 +125,46 @@ def _call(
     path: str,
     json: dict[str, object] | None = None,
     unknown_id: str | None = None,
+    key: str | None = None,
 ) -> httpx.Response:
-    """One request to the server, made exactly once. Each failure becomes one plain sentence."""
-    try:
-        response = client.request(
-            method, settings.url.rstrip("/") + path, json=json, headers={"Authorization": f"Bearer {settings.key}"}
-        )
-    except httpx.TransportError:
-        raise _unreachable(settings) from None
-    return _answer(response, method, path, unknown_id)
+    """One request to the server, tried at most 3 times, and only after something that can succeed later.
+    Each failure becomes one plain sentence."""
+    for wait in (*WAITS, None):  # None marks the last try: nothing is left to wait for
+        try:
+            response = client.request(
+                method, settings.url.rstrip("/") + path, json=json, headers=_headers(settings, key)
+            )
+        except httpx.TransportError as error:
+            if wait is not None and _can_succeed_later(error):
+                pause(wait)
+                continue
+            raise _failed(settings, error) from None
+        if wait is not None and _status_can_succeed_later(response.status_code):
+            pause(wait)
+            continue
+        return _answer(response, method, path, unknown_id)
+    raise AssertionError("unreachable: the last try always returns or raises")
 
 
 async def _call_async(
-    client: httpx.AsyncClient, settings: Settings, method: str, path: str, json: dict[str, object]
+    client: httpx.AsyncClient, settings: Settings, method: str, path: str, json: dict[str, object], key: str
 ) -> httpx.Response:
-    """The same one request as _call, for the async client."""
-    try:
-        response = await client.request(
-            method, settings.url.rstrip("/") + path, json=json, headers={"Authorization": f"Bearer {settings.key}"}
-        )
-    except httpx.TransportError:
-        raise _unreachable(settings) from None
-    return _answer(response, method, path, None)
+    """The same request and the same retries as _call, for the async client."""
+    for wait in (*WAITS, None):
+        try:
+            response = await client.request(
+                method, settings.url.rstrip("/") + path, json=json, headers=_headers(settings, key)
+            )
+        except httpx.TransportError as error:
+            if wait is not None and _can_succeed_later(error):
+                await pause_async(wait)
+                continue
+            raise _failed(settings, error) from None
+        if wait is not None and _status_can_succeed_later(response.status_code):
+            await pause_async(wait)
+            continue
+        return _answer(response, method, path, None)
+    raise AssertionError("unreachable: the last try always returns or raises")
 
 
 def _parse[T: BaseModel](model: type[T], response: httpx.Response) -> T:
@@ -126,7 +180,7 @@ def send_email(client: httpx.Client, settings: Settings, to: str, issue: Issue) 
     check_recipient(to)
     personal = issue.personalize(STAND_IN_NAME)
     payload: dict[str, object] = {"from": SENDER, "to": [to], "subject": personal.subject, "text": personal.body}
-    response = _call(client, settings, "POST", "/emails", payload)
+    response = _call(client, settings, "POST", "/emails", payload, key=idempotency_key(issue, to))
     return Sent(status_code=response.status_code, id=_parse(_Created, response).id)
 
 
@@ -141,7 +195,7 @@ def send_entry(client: httpx.Client, settings: Settings, entry: Entry) -> Sent:
     check_server(settings)
     check_recipient(entry.to)
     payload: dict[str, object] = {"from": SENDER, "to": [entry.to], "subject": entry.subject, "text": entry.text}
-    response = _call(client, settings, "POST", "/emails", payload)
+    response = _call(client, settings, "POST", "/emails", payload, key=entry.key)
     return Sent(status_code=response.status_code, id=_parse(_Created, response).id)
 
 
@@ -150,5 +204,5 @@ async def send_entry_async(client: httpx.AsyncClient, settings: Settings, entry:
     check_server(settings)
     check_recipient(entry.to)
     payload: dict[str, object] = {"from": SENDER, "to": [entry.to], "subject": entry.subject, "text": entry.text}
-    response = await _call_async(client, settings, "POST", "/emails", payload)
+    response = await _call_async(client, settings, "POST", "/emails", payload, entry.key)
     return Sent(status_code=response.status_code, id=_parse(_Created, response).id)
