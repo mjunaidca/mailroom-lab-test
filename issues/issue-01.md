@@ -1,4 +1,4 @@
-Subject: The Steep Club opens Monday
+Subject: Your first Steep Club box ships Monday, and it is lovely
 Preview: Your monthly tea box, chosen by our blenders. Founding members get the first box free.
 
 Hi {{first_name}},
