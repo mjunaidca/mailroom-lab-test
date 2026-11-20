@@ -14,6 +14,7 @@ from mailroom.checks import check_issue
 from mailroom.issue import Issue, read_issue
 from mailroom.plan import Plan, build_plan, write_plan
 from mailroom.problems import InputError, Problem
+from mailroom.report import SENT_PATH, build_report, read_sent, records_of, write_sent
 from mailroom.resend import Sent, Settings, get_status, send_email
 from mailroom.sending import send_all, send_all_at_once
 from mailroom.signups import read_signups
@@ -80,6 +81,7 @@ def send_now(
     transport: httpx.BaseTransport | None = None,
     at_once: int | None = None,
     async_transport: httpx.AsyncBaseTransport | None = None,
+    sent_path: Path = SENT_PATH,
 ) -> int:
     """Check the issue, plan it, send the whole plan one by one, and say how long it took."""
     issue = read_issue(issue_file)
@@ -98,7 +100,22 @@ def send_now(
             sent = send_all(plan, settings, client, latency)
     else:
         sent = asyncio.run(send_plan_at_once(plan, settings, latency, at_once, async_transport))
+    write_sent(records_of(plan, sent), sent_path)
     print(f"Sent {len(sent)} emails in {time.perf_counter() - started:.2f} seconds")
+    return 0
+
+
+def report(sent_path: Path = SENT_PATH) -> int:
+    """Say how many emails each group got, and list every email that did not go out."""
+    built = build_report(read_sent(sent_path), read_subscribers().good)
+    for group, count in built.per_group.items():
+        print(f"{group}: {count}")
+    if not built.failures:
+        print("Failures: none")
+    else:
+        print(f"Failures: {len(built.failures)}")
+        for r in built.failures:
+            print(f"failed: {r.to} - {r.id}: {r.status}")
     return 0
 
 
@@ -154,6 +171,7 @@ def main(argv: list[str]) -> int:
     p_send.add_argument("--run-date", type=date.fromisoformat)
     p_send.add_argument("--latency", type=non_negative_seconds, default=0.0)
     p_send.add_argument("--at-once", type=at_least_one)
+    sub.add_parser("report")
     p_one = sub.add_parser("send-one")
     p_one.add_argument("issue_file", type=Path)
     p_one.add_argument("--to", required=True)
@@ -184,6 +202,8 @@ def main(argv: list[str]) -> int:
             return send(args.issue_file, run_date)
         if args.command == "send":
             return send_now(args.issue_file, run_date, Settings.from_env(os.environ), args.latency, at_once=args.at_once)
+        if args.command == "report":
+            return report()
         if args.command == "subscribers":
             return subscribers(run_date, args.since_days)
     except InputError as error:
