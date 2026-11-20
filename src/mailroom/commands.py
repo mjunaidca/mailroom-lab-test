@@ -3,12 +3,13 @@ import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
+from typing import NoReturn
 
 from mailroom.checks import check_issue
 from mailroom.subscribers import joined_since, next_send, read_subscribers
 
 
-def subscribers(run_date, since_days=None):
+def subscribers(run_date: date, since_days: int | None = None) -> None:
     rows = read_subscribers()
     if since_days is not None:
         print(f"Joined in last {since_days} days: {len(joined_since(rows, run_date, since_days))}")
@@ -19,7 +20,7 @@ def subscribers(run_date, since_days=None):
         print(f"{group}: {count}")
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="mailroom.py")
     sub = parser.add_subparsers(dest="command", required=True)
     p_sub = sub.add_parser("subscribers")
@@ -44,5 +45,5 @@ def main(argv):
     return 0
 
 
-def cli():
+def cli() -> NoReturn:
     sys.exit(main(sys.argv))

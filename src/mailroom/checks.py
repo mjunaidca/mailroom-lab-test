@@ -1,7 +1,7 @@
 from mailroom.issue import LINK_PATTERN, MAX_PREVIEW_LENGTH, MAX_SUBJECT_LENGTH
 
 
-def check_subject(issue_text):
+def check_subject(issue_text: str) -> list[str]:
     """Return a list of problems with the issue's Subject line; empty if fine."""
     for line in issue_text.splitlines():
         if line.startswith("Subject:"):
@@ -14,7 +14,7 @@ def check_subject(issue_text):
     return ["missing"]
 
 
-def check_issue(issue_text):
+def check_issue(issue_text: str) -> list[str]:
     """Return a list of every problem in the issue; empty if fine."""
     problems = [f"subject: {p}" for p in check_subject(issue_text)]
     lines = issue_text.splitlines()
