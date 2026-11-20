@@ -18,3 +18,4 @@ Mailroom is a command-line tool for one newsletter: Kettlebird Tea's Steep Club.
 - Data from outside goes through the model before any code uses it.
 - Report every problem with its row, never just the first. No traceback for a user's mistake: bad rows exit 1 with the full report; a missing file or wrong columns stop with one plain sentence and exit 2.
 - The server's address and the key come from the environment (`RESEND_API_URL`, default `http://localhost:4000`; `RESEND_API_KEY`, default `re_practice`), never written into code. Sending works only against localhost.
+- Handle each server status on purpose: a 422 shows the server's own message, a 404 says the id is unknown, no connection says the practice server is not running and how to start it (`npx emulate@0.12.3 start --service resend`). Never retry a 4xx.

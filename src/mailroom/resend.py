@@ -11,6 +11,7 @@ from mailroom.problems import InputError
 
 DEFAULT_URL = "http://localhost:4000"
 DEFAULT_KEY = "re_practice"
+START_COMMAND = "npx emulate@0.12.3 start --service resend"
 SENDER = "onboarding@resend.dev"
 ALLOWED_RECIPIENT_DOMAINS = ("example.com", "resend.dev")
 # The test address has no first name, so the greeting reads "Hi there,".
@@ -56,16 +57,37 @@ def check_recipient(to: str) -> None:
         raise InputError(f"I will only send to @example.com or @resend.dev addresses, not {to}.")
 
 
-def _call(client: httpx.Client, settings: Settings, method: str, path: str, json: dict[str, object] | None = None) -> httpx.Response:
-    """One request to the server. Any failure becomes one plain sentence."""
+class _Refusal(BaseModel):
+    message: str
+
+
+def _call(
+    client: httpx.Client,
+    settings: Settings,
+    method: str,
+    path: str,
+    json: dict[str, object] | None = None,
+    unknown_id: str | None = None,
+) -> httpx.Response:
+    """One request to the server, made exactly once: a 4xx is the server's final answer, so it is never retried.
+    Each failure is handled on purpose and becomes one plain sentence."""
     try:
         response = client.request(
             method, settings.url.rstrip("/") + path, json=json, headers={"Authorization": f"Bearer {settings.key}"}
         )
     except httpx.TransportError:
-        raise InputError(f"I can't reach the practice server at {settings.url}. Is it running?") from None
-    if response.status_code >= 400:
-        raise InputError(f"The practice server answered {response.status_code} to {method} {path}.")
+        raise InputError(f"The practice server is not running at {settings.url}. Start it with: {START_COMMAND}") from None
+    status = response.status_code
+    if status == 422:
+        try:
+            reason = _Refusal.model_validate_json(response.content).message
+        except ValidationError:
+            reason = "it did not say why"
+        raise InputError(f"The practice server refused it: {reason}")
+    if status == 404 and unknown_id is not None:
+        raise InputError(f"The practice server has no email with the id {unknown_id}: the id is unknown.")
+    if status >= 400:
+        raise InputError(f"The practice server answered {status} to {method} {path}.")
     return response
 
 
@@ -89,4 +111,4 @@ def send_email(client: httpx.Client, settings: Settings, to: str, issue: Issue) 
 def get_status(client: httpx.Client, settings: Settings, email_id: str) -> str:
     """Ask the server what happened to an email."""
     check_server(settings)
-    return _parse(_Fetched, _call(client, settings, "GET", f"/emails/{email_id}")).last_event
+    return _parse(_Fetched, _call(client, settings, "GET", f"/emails/{email_id}", unknown_id=email_id)).last_event
