@@ -986,3 +986,67 @@ def test_the_key_is_at_most_256_characters_and_does_not_contain_the_address() ->
     for entry in plan_for(ISSUE).entries:
         assert 0 < len(entry.key) <= 256
         assert "@" not in entry.key
+
+
+# --- report: the send writes outbox/sent.json; report says how many each group got, and any failures ---
+
+
+def send_all_24(sent_path: Path) -> None:
+    transport = echo_server([])._transport
+    assert commands.send_now(ISSUE_01, date(2026, 12, 7), PRACTICE, 0, transport, sent_path=sent_path) == 0
+
+
+def test_send_writes_sent_json_with_each_emails_id_recipient_and_status(tmp_path: Path) -> None:
+    sent_path = tmp_path / "sent.json"
+    send_all_24(sent_path)
+    records = json.loads(sent_path.read_text())
+    assert len(records) == 24
+    assert set(records[0]) == {"id", "to", "status"}
+    assert records[0]["id"] == f"em_{records[0]['to']}"
+    assert {r["status"] for r in records} == {"sent"}
+    assert [r["to"] for r in records] == [s.email for s in read_subscribers().good]
+
+
+def test_report_after_a_send_to_all_24_says_8_per_group_and_no_failures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sent_path = tmp_path / "sent.json"
+    send_all_24(sent_path)
+    capsys.readouterr()
+    assert commands.report(sent_path) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "tea-curious: 8",
+        "gift-buyers: 8",
+        "daily-drinkers: 8",
+        "Failures: none",
+    ]
+
+
+def test_report_lists_every_failure_with_its_recipient(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    people = read_subscribers().good
+    sent_path = tmp_path / "sent.json"
+    sent_path.write_text(json.dumps([
+        {"id": f"em_{p.email}", "to": p.email, "status": "failed" if i in (0, 9) else "sent"}
+        for i, p in enumerate(people)
+    ]))
+    assert commands.report(sent_path) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "Failures: 2" in lines
+    assert sum(f"failed: {people[i].email}" in line for line in lines for i in (0, 9)) == 2
+
+
+def test_report_counts_only_the_emails_that_went_out(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    people = read_subscribers().good
+    sent_path = tmp_path / "sent.json"
+    sent_path.write_text(json.dumps([
+        {"id": f"em_{p.email}", "to": p.email, "status": "failed" if i == 0 else "sent"}
+        for i, p in enumerate(people)
+    ]))
+    commands.report(sent_path)
+    assert f"{people[0].group}: 7" in capsys.readouterr().out.splitlines()
+
+
+def test_report_without_a_sent_json_is_one_plain_sentence(tmp_path: Path) -> None:
+    with pytest.raises(InputError, match="sent.json"):
+        commands.report(tmp_path / "sent.json")
+
