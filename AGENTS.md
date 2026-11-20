@@ -9,3 +9,4 @@ Mailroom is a command-line tool for one newsletter: Kettlebird Tea's Steep Club.
 - Commit and push after every step.
 - Behaviors first. The user gives the expected answers; you write them as checks in checks.py, show them failing, then write the code.
 - Never read today's date inside the logic. Pass the run date in. Only the command line may read today's date.
+- When something breaks, show me the full error exactly as printed before changing anything.
