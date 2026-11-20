@@ -16,3 +16,4 @@ Mailroom is a command-line tool for one newsletter: Kettlebird Tea's Steep Club.
 - Every function has type hints, and pyright must be clean (`uv run pyright` reports 0 errors).
 - Pass Subscriber and Issue objects around, never raw rows or raw text.
 - Data from outside goes through the model before any code uses it.
+- Report every problem with its row, never just the first. No traceback for a user's mistake: bad rows exit 1 with the full report; a missing file or wrong columns stop with one plain sentence and exit 2.
