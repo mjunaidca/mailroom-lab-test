@@ -1,0 +1,4 @@
+# The sending code needs approval from its owner.
+/src/mailroom/sending.py @mjunaidca
+/src/mailroom/resend.py @mjunaidca
+/src/mailroom/resend_sdk.py @mjunaidca
