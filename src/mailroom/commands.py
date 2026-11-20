@@ -6,16 +6,17 @@ from pathlib import Path
 from typing import NoReturn
 
 from mailroom.checks import check_issue
+from mailroom.issue import Issue
 from mailroom.subscribers import joined_since, next_send, read_subscribers
 
 
 def subscribers(run_date: date, since_days: int | None = None) -> None:
-    rows = read_subscribers()
+    people = read_subscribers()
     if since_days is not None:
-        print(f"Joined in last {since_days} days: {len(joined_since(rows, run_date, since_days))}")
+        print(f"Joined in last {since_days} days: {len(joined_since(people, run_date, since_days))}")
         return
-    groups = Counter(row["group"] for row in rows)
-    print(f"Total: {len(rows)}")
+    groups = Counter(s.group for s in people)
+    print(f"Total: {len(people)}")
     for group, count in groups.items():
         print(f"{group}: {count}")
 
@@ -33,7 +34,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     if args.command == "check":
-        print("\n".join(check_issue(args.issue_file.read_text()) or ["OK"]))
+        print("\n".join(check_issue(Issue.from_text(args.issue_file.read_text())) or ["OK"]))
         return 0
 
     # The command line is the only place that reads today's date.

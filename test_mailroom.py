@@ -37,8 +37,8 @@ def test_subscribers_counts_7_joined_in_last_30_days() -> None:
 
 
 def test_joined_since_counts_7_joined_in_30_days_up_to_date_2026_11_20() -> None:
-    rows = read_subscribers()
-    assert len(joined_since(rows, date(2026, 11, 20), 30)) == 7
+    people = read_subscribers()
+    assert len(joined_since(people, date(2026, 11, 20), 30)) == 7
 
 
 def test_next_send_from_2026_11_20_is_2026_12_07() -> None:
@@ -58,44 +58,44 @@ def issue(subject_line: str | None) -> str:
 
 
 def test_check_subject_short_subject_has_no_problems() -> None:
-    assert check_subject(issue("The Steep Club opens Monday")) == []
+    assert check_subject(Issue.from_text(issue("The Steep Club opens Monday"))) == []
 
 
 def test_check_subject_of_exactly_50_characters_has_no_problems() -> None:
     subject = "Your Steep Club box ships on Monday with new teas."
     assert len(subject) == 50
-    assert check_subject(issue(subject)) == []
+    assert check_subject(Issue.from_text(issue(subject))) == []
 
 
 def test_check_subject_of_51_characters_is_too_long() -> None:
     subject = "Your Steep Club box ships on Monday with fresh teas"
     assert len(subject) == 51
-    assert check_subject(issue(subject)) == ["too long"]
+    assert check_subject(Issue.from_text(issue(subject))) == ["too long"]
 
 
 def test_subject_length_counts_code_points_like_len_so_thumbs_up_with_skin_tone_is_2() -> None:
     subject = "\U0001F44D\U0001F3FD Thanks for joining"  # 👍🏽 = thumbs up + skin tone
     assert len(subject) == 21
-    assert check_subject(issue(subject)) == []
+    assert check_subject(Issue.from_text(issue(subject))) == []
 
 
 def test_check_subject_of_51_code_points_but_50_visible_characters_is_too_long() -> None:
     # 👍🏽 shows as 1 character but is 2 code points, so this is 51 by len().
     subject = "\U0001F44D\U0001F3FD Your Steep Club box ships Monday with fresh teas"
     assert len(subject) == 51
-    assert check_subject(issue(subject)) == ["too long"]
+    assert check_subject(Issue.from_text(issue(subject))) == ["too long"]
 
 
 def test_check_subject_empty_is_one_problem_empty() -> None:
-    assert check_subject(issue("")) == ["empty"]
+    assert check_subject(Issue.from_text(issue(""))) == ["empty"]
 
 
 def test_check_subject_of_only_spaces_is_one_problem_empty() -> None:
-    assert check_subject(issue("   ")) == ["empty"]
+    assert check_subject(Issue.from_text(issue("   "))) == ["empty"]
 
 
 def test_check_subject_missing_is_one_problem_missing() -> None:
-    assert check_subject(issue(None)) == ["missing"]
+    assert check_subject(Issue.from_text(issue(None))) == ["missing"]
 
 
 ISSUE_01 = Path(__file__).parent / "issues" / "issue-01.md"
@@ -109,7 +109,7 @@ def issue_01_with(old: str, new: str) -> str:
 
 
 def test_check_issue_issue_01_has_no_problems() -> None:
-    assert check_issue(ISSUE_01.read_text()) == []
+    assert check_issue(Issue.from_text(ISSUE_01.read_text())) == []
 
 
 def test_check_issue_preview_of_91_characters_is_one_problem() -> None:
@@ -118,23 +118,23 @@ def test_check_issue_preview_of_91_characters_is_one_problem() -> None:
         "Preview: Your monthly tea box, chosen by our blenders. Founding members get the first box free.",
         preview,
     )
-    assert len(check_issue(text)) == 1
+    assert len(check_issue(Issue.from_text(text))) == 1
 
 
 def test_check_issue_without_first_name_is_one_problem() -> None:
-    assert len(check_issue(issue_01_with("{{first_name}}", "there"))) == 1
+    assert len(check_issue(Issue.from_text(issue_01_with("{{first_name}}", "there")))) == 1
 
 
 def test_check_issue_with_two_links_is_one_problem() -> None:
     second = "[Read more](https://kettlebird.example/about)"
     text = issue_01_with("Steep well,", f"{second}\n\nSteep well,")
-    assert len(check_issue(text)) == 1
+    assert len(check_issue(Issue.from_text(text))) == 1
 
 
 def test_check_issue_second_link_starting_http_still_counts_as_a_link() -> None:
     second = "[Read more](http://kettlebird.example/about)"
     text = issue_01_with("Steep well,", f"{second}\n\nSteep well,")
-    assert len(check_issue(text)) == 1
+    assert len(check_issue(Issue.from_text(text))) == 1
 
 
 def test_check_issue_without_footer_and_without_greeting_is_two_problems() -> None:
@@ -144,7 +144,7 @@ def test_check_issue_without_footer_and_without_greeting_is_two_problems() -> No
     )
     text = issue_01_with(footer, "")
     text = text.replace("{{first_name}}", "there")
-    assert len(check_issue(text)) == 2
+    assert len(check_issue(Issue.from_text(text))) == 2
 
 
 def test_check_command_on_issue_01_prints_ok() -> None:
