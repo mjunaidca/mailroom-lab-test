@@ -356,13 +356,13 @@ ISSUE_01 = Path(__file__).parent / "issues" / "issue-01.md"
 PRACTICE = resend.Settings(url="http://localhost:4000", key="re_practice")
 
 
-def fake_server(seen: list[httpx.Request], status: int = 200) -> httpx.Client:
+def fake_server(seen: list[httpx.Request], status: int = 200, body: dict[str, object] | None = None) -> httpx.Client:
     """A stand-in for the practice server. Records every request it gets."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         if status != 200:
-            return httpx.Response(status, json={"message": "no"})
+            return httpx.Response(status, json=body or {"message": "no"})
         if request.method == "POST":
             return httpx.Response(200, json={"id": "em_123"})
         return httpx.Response(200, json={"id": "em_123", "last_event": "delivered"})
@@ -466,6 +466,50 @@ def test_send_email_when_the_server_is_not_running_is_one_plain_sentence() -> No
     client = httpx.Client(transport=httpx.MockTransport(refuse))
     with pytest.raises(InputError, match="localhost:4000") as error:
         resend.send_email(client, PRACTICE, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert "\n" not in str(error.value)
+
+
+SERVER_422 = {"statusCode": 422, "name": "validation_error", "message": "Missing required field: subject"}
+SERVER_404 = {"statusCode": 404, "name": "not_found", "message": "Email not found"}
+START_COMMAND = "npx emulate@0.12.3 start --service resend"
+
+
+def test_a_422_shows_the_servers_own_message_in_one_sentence() -> None:
+    with pytest.raises(InputError, match="Missing required field: subject") as error:
+        resend.send_email(fake_server([], status=422, body=SERVER_422), PRACTICE, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert "\n" not in str(error.value)
+
+
+def test_a_422_is_sent_once_and_never_retried() -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError):
+        resend.send_email(fake_server(seen, status=422, body=SERVER_422), PRACTICE, "delivered@resend.dev", Issue.from_text(ISSUE_01.read_text()))
+    assert len(seen) == 1
+
+
+def test_a_404_on_an_email_id_says_the_id_is_unknown() -> None:
+    with pytest.raises(InputError, match="em_nope") as error:
+        resend.get_status(fake_server([], status=404, body=SERVER_404), PRACTICE, "em_nope")
+    assert "unknown" in str(error.value)
+    assert "\n" not in str(error.value)
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 409, 422, 429])
+def test_no_4xx_is_ever_retried(status: int) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError):
+        resend.get_status(fake_server(seen, status=status), PRACTICE, "em_123")
+    assert len(seen) == 1
+
+
+def test_no_connection_says_the_practice_server_is_not_running_and_how_to_start_it() -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(refuse))
+    with pytest.raises(InputError, match="not running") as error:
+        resend.get_status(client, PRACTICE, "em_123")
+    assert START_COMMAND in str(error.value)
     assert "\n" not in str(error.value)
 
 
