@@ -163,7 +163,7 @@ def test_check_command_prints_the_repeated_preview_problem(tmp_path: Path) -> No
     )
     path = tmp_path / "issue.md"
     path.write_text(text)
-    assert run("check", str(path)) == ["preview: repeats the subject"]
+    assert run("check", str(path), code=1) == ["preview: repeats the subject"]
 
 
 def test_check_issue_without_first_name_is_one_problem() -> None:
@@ -202,7 +202,7 @@ def test_check_command_prints_each_problem_on_its_own_line(tmp_path: Path) -> No
     )
     bad_issue = tmp_path / "bad-issue.md"
     bad_issue.write_text(text)
-    lines = run("check", str(bad_issue))
+    lines = run("check", str(bad_issue), code=1)
     assert len(lines) == 2
     assert "OK" not in lines
 

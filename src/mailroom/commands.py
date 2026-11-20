@@ -182,8 +182,9 @@ def main(argv: list[str]) -> int:
         parser.error("--at-once has no meaning with --dry-run, which sends nothing")
 
     if args.command == "check":
-        print("\n".join(check_issue(Issue.from_text(args.issue_file.read_text())) or ["OK"]))
-        return 0
+        problems = check_issue(Issue.from_text(args.issue_file.read_text()))
+        print("\n".join(problems or ["OK"]))
+        return 1 if problems else 0
 
     if args.command == "send-one":
         try:
