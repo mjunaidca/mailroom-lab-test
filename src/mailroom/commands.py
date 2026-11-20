@@ -11,6 +11,7 @@ from typing import NoReturn
 import httpx
 
 from mailroom.checks import check_issue
+from mailroom.guard import read_call, reasons
 from mailroom.issue import Issue, read_issue
 from mailroom.plan import Plan, build_plan, write_plan
 from mailroom.problems import InputError, Problem
@@ -18,7 +19,7 @@ from mailroom.report import SENT_PATH, build_report, read_sent, records_of, writ
 from mailroom.resend import Sent, Settings, get_status, send_email
 from mailroom.sending import send_all, send_all_at_once
 from mailroom.signups import read_signups
-from mailroom.subscribers import joined_since, next_send, read_subscribers
+from mailroom.subscribers import SUBSCRIBERS_CSV, joined_since, next_send, read_subscribers
 
 
 def print_problems(problems: list[Problem]) -> None:
@@ -26,8 +27,8 @@ def print_problems(problems: list[Problem]) -> None:
         print(f"rejected: {p.name} - row {p.row}, {p.field}: {p.message}")
 
 
-def subscribers(run_date: date, since_days: int | None = None) -> int:
-    result = read_subscribers()
+def subscribers(run_date: date, since_days: int | None = None, path: Path = SUBSCRIBERS_CSV) -> int:
+    result = read_subscribers(path)
     if result.problems:
         print_problems(result.problems)
         return 1
@@ -50,14 +51,14 @@ def import_file(path: Path, run_date: date) -> int:
     return 1 if result.problems else 0
 
 
-def send(issue_file: Path, run_date: date) -> int:
+def send(issue_file: Path, run_date: date, path: Path = SUBSCRIBERS_CSV) -> int:
     """Dry run: check the issue, then write the plan. Nothing is written if anything is wrong."""
     issue = read_issue(issue_file)
     issue_problems = check_issue(issue)
     if issue_problems:
         print("\n".join(issue_problems))
         return 1
-    result = read_subscribers()
+    result = read_subscribers(path)
     if result.problems:
         print_problems(result.problems)
         return 1
@@ -82,6 +83,7 @@ def send_now(
     at_once: int | None = None,
     async_transport: httpx.AsyncBaseTransport | None = None,
     sent_path: Path = SENT_PATH,
+    subscribers_path: Path = SUBSCRIBERS_CSV,
 ) -> int:
     """Check the issue, plan it, send the whole plan one by one, and say how long it took."""
     issue = read_issue(issue_file)
@@ -89,7 +91,7 @@ def send_now(
     if issue_problems:
         print("\n".join(issue_problems))
         return 1
-    result = read_subscribers()
+    result = read_subscribers(subscribers_path)
     if result.problems:
         print_problems(result.problems)
         return 1
@@ -105,9 +107,9 @@ def send_now(
     return 0
 
 
-def report(sent_path: Path = SENT_PATH) -> int:
+def report(sent_path: Path = SENT_PATH, subscribers_path: Path = SUBSCRIBERS_CSV) -> int:
     """Say how many emails each group got, and list every email that did not go out."""
-    built = build_report(read_sent(sent_path), read_subscribers().good)
+    built = build_report(read_sent(sent_path), read_subscribers(subscribers_path).good)
     for group, count in built.per_group.items():
         print(f"{group}: {count}")
     if not built.failures:
@@ -130,6 +132,14 @@ def send_one(issue_file: Path, to: str, settings: Settings, client: httpx.Client
     print(f"Sent: {sent.status_code} {sent.id}")
     print(f"Status: {get_status(client, settings, sent.id)}")
     return 0
+
+
+def guard() -> int:
+    """Read a hook's tool call from standard input. Exit 2, saying why, if it would mail a non-practice address."""
+    why = reasons(read_call(sys.stdin.read()))
+    for reason in why:
+        print(reason, file=sys.stderr)
+    return 2 if why else 0
 
 
 def non_negative_seconds(text: str) -> float:
@@ -158,6 +168,7 @@ def main(argv: list[str]) -> int:
     p_sub = sub.add_parser("subscribers")
     p_sub.add_argument("--since-days", type=int)
     p_sub.add_argument("--run-date", type=date.fromisoformat)
+    p_sub.add_argument("--subscribers", type=Path, default=SUBSCRIBERS_CSV)
     p_next = sub.add_parser("next-send")
     p_next.add_argument("--run-date", type=date.fromisoformat)
     p_check = sub.add_parser("check")
@@ -171,7 +182,10 @@ def main(argv: list[str]) -> int:
     p_send.add_argument("--run-date", type=date.fromisoformat)
     p_send.add_argument("--latency", type=non_negative_seconds, default=0.0)
     p_send.add_argument("--at-once", type=at_least_one)
-    sub.add_parser("report")
+    p_send.add_argument("--subscribers", type=Path, default=SUBSCRIBERS_CSV)
+    p_report = sub.add_parser("report")
+    p_report.add_argument("--subscribers", type=Path, default=SUBSCRIBERS_CSV)
+    sub.add_parser("guard")
     p_one = sub.add_parser("send-one")
     p_one.add_argument("issue_file", type=Path)
     p_one.add_argument("--to", required=True)
@@ -194,9 +208,16 @@ def main(argv: list[str]) -> int:
             print(error, file=sys.stderr)
             return 2
 
+    if args.command == "guard":
+        try:
+            return guard()
+        except InputError as error:
+            print(error, file=sys.stderr)
+            return 2
+
     if args.command == "report":  # needs no date
         try:
-            return report()
+            return report(subscribers_path=args.subscribers)
         except InputError as error:
             print(error, file=sys.stderr)
             return 2
@@ -207,11 +228,12 @@ def main(argv: list[str]) -> int:
         if args.command == "import":
             return import_file(args.file, run_date)
         if args.command == "send" and args.dry_run:
-            return send(args.issue_file, run_date)
+            return send(args.issue_file, run_date, args.subscribers)
         if args.command == "send":
-            return send_now(args.issue_file, run_date, Settings.from_env(os.environ), args.latency, at_once=args.at_once)
+            return send_now(args.issue_file, run_date, Settings.from_env(os.environ), args.latency, at_once=args.at_once,
+                            subscribers_path=args.subscribers)
         if args.command == "subscribers":
-            return subscribers(run_date, args.since_days)
+            return subscribers(run_date, args.since_days, args.subscribers)
     except InputError as error:
         print(error, file=sys.stderr)
         return 2
