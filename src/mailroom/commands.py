@@ -193,6 +193,13 @@ def main(argv: list[str]) -> int:
             print(error, file=sys.stderr)
             return 2
 
+    if args.command == "report":  # needs no date
+        try:
+            return report()
+        except InputError as error:
+            print(error, file=sys.stderr)
+            return 2
+
     # The command line is the only place that reads today's date.
     run_date = args.run_date or date.today()
     try:
@@ -202,8 +209,6 @@ def main(argv: list[str]) -> int:
             return send(args.issue_file, run_date)
         if args.command == "send":
             return send_now(args.issue_file, run_date, Settings.from_env(os.environ), args.latency, at_once=args.at_once)
-        if args.command == "report":
-            return report()
         if args.command == "subscribers":
             return subscribers(run_date, args.since_days)
     except InputError as error:

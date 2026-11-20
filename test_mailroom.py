@@ -1050,3 +1050,9 @@ def test_report_without_a_sent_json_is_one_plain_sentence(tmp_path: Path) -> Non
     with pytest.raises(InputError, match="sent.json"):
         commands.report(tmp_path / "sent.json")
 
+
+
+def test_report_from_the_command_line_never_shows_a_traceback() -> None:
+    result = run_raw("report")
+    assert "Traceback" not in result.stderr
+    assert result.returncode in (0, 2)
