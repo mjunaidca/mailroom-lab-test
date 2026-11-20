@@ -8,6 +8,7 @@ Mailroom is a command-line tool for one newsletter: Kettlebird Tea's Steep Club.
 - Never use a real person's email address. Use @example.com, and @resend.dev for practice sends.
 - Commit and push after every step.
 - Every change goes on a branch and arrives as a pull request. Never commit to main; never merge a pull request unless asked.
+- A pull request shows its evidence: fill in the pull request template, and under Evidence paste the real, unedited output of `uv run pytest`, `uv run pyright` and `uv run mailroom check issues/issue-01.md`. Never summarize it or write it from memory.
 - Behaviors first. The user gives the expected answers; you write them as checks in checks.py, show them failing, then write the code.
 - Never read today's date inside the logic. Pass the run date in. Only the command line may read today's date.
 - When something breaks, show me the full error exactly as printed before changing anything.
