@@ -17,3 +17,4 @@ Mailroom is a command-line tool for one newsletter: Kettlebird Tea's Steep Club.
 - Pass Subscriber and Issue objects around, never raw rows or raw text.
 - Data from outside goes through the model before any code uses it.
 - Report every problem with its row, never just the first. No traceback for a user's mistake: bad rows exit 1 with the full report; a missing file or wrong columns stop with one plain sentence and exit 2.
+- The server's address and the key come from the environment (`RESEND_API_URL`, default `http://localhost:4000`; `RESEND_API_KEY`, default `re_practice`), never written into code. Sending works only against localhost.

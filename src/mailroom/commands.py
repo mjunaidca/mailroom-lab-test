@@ -1,14 +1,18 @@
 import argparse
+import os
 import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import NoReturn
 
+import httpx
+
 from mailroom.checks import check_issue
 from mailroom.issue import Issue, read_issue
 from mailroom.plan import build_plan, write_plan
 from mailroom.problems import InputError, Problem
+from mailroom.resend import Settings, get_status, send_email
 from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, next_send, read_subscribers
 
@@ -58,6 +62,19 @@ def send(issue_file: Path, run_date: date) -> int:
     return 0
 
 
+def send_one(issue_file: Path, to: str, settings: Settings, client: httpx.Client) -> int:
+    """Send the issue to one practice address, then ask the server what became of it."""
+    issue = read_issue(issue_file)
+    issue_problems = check_issue(issue)
+    if issue_problems:
+        print("\n".join(issue_problems))
+        return 1
+    sent = send_email(client, settings, to, issue)
+    print(f"Sent: {sent.status_code} {sent.id}")
+    print(f"Status: {get_status(client, settings, sent.id)}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="mailroom.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -75,11 +92,22 @@ def main(argv: list[str]) -> int:
     p_send.add_argument("issue_file", type=Path)
     p_send.add_argument("--dry-run", action="store_true", required=True)
     p_send.add_argument("--run-date", type=date.fromisoformat)
+    p_one = sub.add_parser("send-one")
+    p_one.add_argument("issue_file", type=Path)
+    p_one.add_argument("--to", required=True)
     args = parser.parse_args(argv[1:])
 
     if args.command == "check":
         print("\n".join(check_issue(Issue.from_text(args.issue_file.read_text())) or ["OK"]))
         return 0
+
+    if args.command == "send-one":
+        try:
+            with httpx.Client(timeout=10) as client:
+                return send_one(args.issue_file, args.to, Settings.from_env(os.environ), client)
+        except InputError as error:
+            print(error, file=sys.stderr)
+            return 2
 
     # The command line is the only place that reads today's date.
     run_date = args.run_date or date.today()
