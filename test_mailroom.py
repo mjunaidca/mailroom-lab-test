@@ -176,10 +176,24 @@ def test_check_issue_with_two_links_is_one_problem() -> None:
     assert len(check_issue(Issue.from_text(text))) == 1
 
 
-def test_check_issue_second_link_starting_http_still_counts_as_a_link() -> None:
+def test_check_issue_second_link_starting_http_is_two_problems_too_many_links_and_not_https() -> None:
     second = "[Read more](http://kettlebird.example/about)"
     text = issue_01_with("Steep well,", f"{second}\n\nSteep well,")
-    assert len(check_issue(Issue.from_text(text))) == 1
+    assert check_issue(Issue.from_text(text)) == [
+        "link: expected exactly 1, found 2",
+        "link: not https: http://kettlebird.example/about",
+    ]
+
+
+def test_check_issue_with_one_http_link_is_one_problem_not_https() -> None:
+    text = issue_01_with("https://kettlebird.example/steep-club", "http://kettlebird.example/steep-club")
+    assert check_issue(Issue.from_text(text)) == ["link: not https: http://kettlebird.example/steep-club"]
+
+
+def test_check_command_on_an_issue_with_an_http_link_exits_1(tmp_path: Path) -> None:
+    path = tmp_path / "issue.md"
+    path.write_text(issue_01_with("https://kettlebird.example/steep-club", "http://kettlebird.example/steep-club"))
+    assert run("check", str(path), code=1) == ["link: not https: http://kettlebird.example/steep-club"]
 
 
 def test_check_issue_without_footer_and_without_greeting_is_two_problems() -> None:

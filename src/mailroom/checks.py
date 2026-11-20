@@ -28,6 +28,10 @@ def check_issue(issue: Issue) -> list[str]:
     if len(issue.links) != 1:
         problems.append(f"link: expected exactly 1, found {len(issue.links)}")
 
+    for link in issue.links:
+        if not link.startswith("https://"):
+            problems.append(f"link: not https: {link}")
+
     lines = issue.body.splitlines()
     has_reason = any(line.startswith("You're getting this because") for line in lines)
     has_unsubscribe = any("Unsubscribe: {{unsubscribe_url}}" in line for line in lines)
