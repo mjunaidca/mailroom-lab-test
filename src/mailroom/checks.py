@@ -19,6 +19,9 @@ def check_issue(issue: Issue) -> list[str]:
     if issue.preview is not None and len(issue.preview) > MAX_PREVIEW_LENGTH:
         problems.append("preview: too long")
 
+    if issue.preview is not None and issue.preview == issue.subject:
+        problems.append("preview: repeats the subject")
+
     if "{{first_name}}" not in issue.body:
         problems.append("greeting: missing {{first_name}}")
 
