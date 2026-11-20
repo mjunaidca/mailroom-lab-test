@@ -65,6 +65,19 @@ def test_check_subject_of_51_characters_is_too_long():
     assert check_subject(issue(subject)) == ["too long"]
 
 
+def test_subject_length_counts_code_points_like_len_so_thumbs_up_with_skin_tone_is_2():
+    subject = "\U0001F44D\U0001F3FD Thanks for joining"  # 👍🏽 = thumbs up + skin tone
+    assert len(subject) == 21
+    assert check_subject(issue(subject)) == []
+
+
+def test_check_subject_of_51_code_points_but_50_visible_characters_is_too_long():
+    # 👍🏽 shows as 1 character but is 2 code points, so this is 51 by len().
+    subject = "\U0001F44D\U0001F3FD Your Steep Club box ships Monday with fresh teas"
+    assert len(subject) == 51
+    assert check_subject(issue(subject)) == ["too long"]
+
+
 def test_check_subject_empty_is_one_problem_empty():
     assert check_subject(issue("")) == ["empty"]
 
