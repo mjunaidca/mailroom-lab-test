@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import time
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -7,9 +9,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mailroom import commands, resend
+from mailroom import commands, resend, sending
 from mailroom.checks import check_issue, check_subject
 from mailroom.issue import Issue
+from mailroom.plan import Entry, Plan
 from mailroom.problems import InputError
 from mailroom.signups import read_signups
 from mailroom.subscribers import joined_since, read_subscribers
@@ -545,3 +548,95 @@ def test_send_one_from_the_command_line_refuses_a_real_recipient_with_one_senten
     assert result.stdout == ""
     assert len(result.stderr.strip().splitlines()) == 1
     assert "someone@gmail.com" in result.stderr
+
+
+# --- send: the whole plan, one by one, with a wait (latency) before each request ---
+
+
+def plan_of(count: int) -> Plan:
+    entries = [Entry(to=f"person{i}@example.com", subject="Hello", text=f"Hi {i}") for i in range(count)]
+    return Plan(run_date=date(2026, 12, 7), entries=entries)
+
+
+def recipient_of(request: httpx.Request) -> str:
+    return json.loads(request.content)["to"][0]
+
+
+def echo_server(seen: list[httpx.Request], times: list[float] | None = None) -> httpx.Client:
+    """Answers each send with an id made from the recipient, so a result can be matched to its entry."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if times is not None:
+            times.append(time.perf_counter())
+        return httpx.Response(200, json={"id": f"em_{recipient_of(request)}"})
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_send_all_sends_every_entry_in_the_plans_order() -> None:
+    seen: list[httpx.Request] = []
+    sent = sending.send_all(plan_of(4), PRACTICE, echo_server(seen), 0)
+    assert [recipient_of(r) for r in seen] == [f"person{i}@example.com" for i in range(4)]
+    assert [s.id for s in sent] == [f"em_person{i}@example.com" for i in range(4)]
+
+
+def test_send_all_waits_the_latency_before_each_request() -> None:
+    times: list[float] = []
+    start = time.perf_counter()
+    sending.send_all(plan_of(4), PRACTICE, echo_server([], times), 0.05)
+    assert times[0] - start >= 0.04
+    assert all(later - earlier >= 0.04 for earlier, later in zip(times, times[1:]))
+
+
+@pytest.mark.parametrize("url", ["https://api.resend.com", "http://example.com:4000"])
+def test_send_all_refuses_a_server_that_is_not_localhost_and_sends_nothing(url: str) -> None:
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError, match="localhost"):
+        sending.send_all(plan_of(3), resend.Settings(url=url, key="re_practice"), echo_server(seen), 0)
+    assert seen == []
+
+
+def test_send_all_with_a_real_address_anywhere_in_the_plan_sends_nothing() -> None:
+    plan = plan_of(3)
+    plan.entries[2] = Entry(to="someone@gmail.com", subject="Hello", text="Hi")
+    seen: list[httpx.Request] = []
+    with pytest.raises(InputError, match="someone@gmail.com"):
+        sending.send_all(plan, PRACTICE, echo_server(seen), 0)
+    assert seen == []
+
+
+def test_send_command_sends_all_24_and_prints_how_long_it_took(capsys: pytest.CaptureFixture[str]) -> None:
+    seen: list[httpx.Request] = []
+    transport = echo_server(seen)._transport  # the fake server's transport
+    code = commands.send_now(ISSUE_01, date(2026, 12, 7), PRACTICE, 0, transport)
+    assert code == 0
+    assert len(seen) == 24
+    assert re.fullmatch(r"Sent 24 emails in \d+\.\d{2} seconds", capsys.readouterr().out.strip())
+
+
+def test_send_command_with_an_issue_that_fails_the_check_sends_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    bad_issue = tmp_path / "bad-issue.md"
+    bad_issue.write_text(issue_01_with("{{first_name}}", "there"))
+    seen: list[httpx.Request] = []
+    code = commands.send_now(bad_issue, date(2026, 12, 7), PRACTICE, 0, echo_server(seen)._transport)
+    assert code == 1
+    assert "greeting: missing {{first_name}}" in capsys.readouterr().out
+    assert seen == []
+
+
+def test_send_from_the_command_line_refuses_a_server_that_is_not_localhost_with_one_sentence_and_exit_2() -> None:
+    result = run_raw(
+        "send", "issues/issue-01.md", "--run-date", SEND_DATE, "--latency", "0.3",
+        env={"RESEND_API_URL": "https://api.resend.com"},
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert len(result.stderr.strip().splitlines()) == 1
+
+
+def test_send_with_a_negative_latency_is_refused_with_exit_2() -> None:
+    result = run_raw("send", "issues/issue-01.md", "--run-date", SEND_DATE, "--latency=-1")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "latency" in result.stderr and "dry-run" not in result.stderr

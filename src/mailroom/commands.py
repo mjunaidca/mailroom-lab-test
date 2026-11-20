@@ -62,6 +62,16 @@ def send(issue_file: Path, run_date: date) -> int:
     return 0
 
 
+def send_now(
+    issue_file: Path,
+    run_date: date,
+    settings: Settings,
+    latency: float,
+    transport: httpx.BaseTransport | None = None,
+) -> int:
+    raise NotImplementedError
+
+
 def send_one(issue_file: Path, to: str, settings: Settings, client: httpx.Client) -> int:
     """Send the issue to one practice address, then ask the server what became of it."""
     issue = read_issue(issue_file)
