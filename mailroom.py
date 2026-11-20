@@ -1,5 +1,6 @@
 import argparse
 import csv
+import re
 import sys
 from collections import Counter
 from datetime import date, timedelta
@@ -29,6 +30,8 @@ def next_send(run_date):
 
 
 MAX_SUBJECT_LENGTH = 50
+MAX_PREVIEW_LENGTH = 90
+LINK_PATTERN = re.compile(r"\[[^\]]+\]\(https?://[^)\s]+\)")
 
 
 def check_subject(issue_text):
@@ -46,7 +49,28 @@ def check_subject(issue_text):
 
 def check_issue(issue_text):
     """Return a list of every problem in the issue; empty if fine."""
-    raise NotImplementedError
+    problems = [f"subject: {p}" for p in check_subject(issue_text)]
+    lines = issue_text.splitlines()
+
+    for line in lines:
+        if line.startswith("Preview:"):
+            if len(line[len("Preview:"):].strip()) > MAX_PREVIEW_LENGTH:
+                problems.append("preview: too long")
+            break
+
+    if "{{first_name}}" not in issue_text:
+        problems.append("greeting: missing {{first_name}}")
+
+    links = LINK_PATTERN.findall(issue_text)
+    if len(links) != 1:
+        problems.append(f"link: expected exactly 1, found {len(links)}")
+
+    has_reason = any(line.startswith("You're getting this because") for line in lines)
+    has_unsubscribe = any("Unsubscribe: {{unsubscribe_url}}" in line for line in lines)
+    if not (has_reason and has_unsubscribe):
+        problems.append("footer: missing or incomplete")
+
+    return problems
 
 
 def subscribers(run_date, since_days=None):
