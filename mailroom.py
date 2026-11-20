@@ -44,6 +44,11 @@ def check_subject(issue_text):
     return ["missing"]
 
 
+def check_issue(issue_text):
+    """Return a list of every problem in the issue; empty if fine."""
+    raise NotImplementedError
+
+
 def subscribers(run_date, since_days=None):
     rows = read_subscribers()
     if since_days is not None:

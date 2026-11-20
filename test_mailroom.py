@@ -1,6 +1,7 @@
 import subprocess
+from pathlib import Path
 
-from mailroom import check_subject
+from mailroom import check_issue, check_subject
 
 
 def run(*args):
@@ -74,3 +75,52 @@ def test_check_subject_of_only_spaces_is_one_problem_empty():
 
 def test_check_subject_missing_is_one_problem_missing():
     assert check_subject(issue(None)) == ["missing"]
+
+
+ISSUE_01 = Path(__file__).parent / "issues" / "issue-01.md"
+
+
+def issue_01_with(old, new):
+    """issue-01 with `old` replaced by `new`; fails loudly if `old` is not there."""
+    text = ISSUE_01.read_text()
+    assert old in text, f"{old!r} not found in issue-01.md"
+    return text.replace(old, new)
+
+
+def test_check_issue_issue_01_has_no_problems():
+    assert check_issue(ISSUE_01.read_text()) == []
+
+
+def test_check_issue_preview_of_91_characters_is_one_problem():
+    preview = "Preview: " + "a" * 91
+    text = issue_01_with(
+        "Preview: Your monthly tea box, chosen by our blenders. Founding members get the first box free.",
+        preview,
+    )
+    assert len(check_issue(text)) == 1
+
+
+def test_check_issue_without_first_name_is_one_problem():
+    assert len(check_issue(issue_01_with("{{first_name}}", "there"))) == 1
+
+
+def test_check_issue_with_two_links_is_one_problem():
+    second = "[Read more](https://kettlebird.example/about)"
+    text = issue_01_with("Steep well,", f"{second}\n\nSteep well,")
+    assert len(check_issue(text)) == 1
+
+
+def test_check_issue_second_link_starting_http_still_counts_as_a_link():
+    second = "[Read more](http://kettlebird.example/about)"
+    text = issue_01_with("Steep well,", f"{second}\n\nSteep well,")
+    assert len(check_issue(text)) == 1
+
+
+def test_check_issue_without_footer_and_without_greeting_is_two_problems():
+    footer = (
+        "You're getting this because you joined the Kettlebird Tea waitlist.\n"
+        "Kettlebird Tea, {{company_address}} · Unsubscribe: {{unsubscribe_url}}\n"
+    )
+    text = issue_01_with(footer, "")
+    text = text.replace("{{first_name}}", "there")
+    assert len(check_issue(text)) == 2
