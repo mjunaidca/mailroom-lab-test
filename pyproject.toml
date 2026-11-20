@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Command-line tool for the Kettlebird Tea Steep Club newsletter"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic[email]>=2.14.4",
+]
 
 [dependency-groups]
 dev = [

@@ -7,6 +7,7 @@ from typing import NoReturn
 
 from mailroom.checks import check_issue
 from mailroom.issue import Issue
+from mailroom.signups import import_signups
 from mailroom.subscribers import joined_since, next_send, read_subscribers
 
 
@@ -21,6 +22,14 @@ def subscribers(run_date: date, since_days: int | None = None) -> None:
         print(f"{group}: {count}")
 
 
+def import_file(path: Path) -> None:
+    for result in import_signups(path):
+        if result.reasons:
+            print(f"rejected: {result.name} - {'; '.join(result.reasons)}")
+        else:
+            print(f"accepted: {result.name}")
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="mailroom.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -31,7 +40,13 @@ def main(argv: list[str]) -> int:
     p_next.add_argument("--run-date", type=date.fromisoformat)
     p_check = sub.add_parser("check")
     p_check.add_argument("issue_file", type=Path)
+    p_import = sub.add_parser("import")
+    p_import.add_argument("file", type=Path)
     args = parser.parse_args(argv[1:])
+
+    if args.command == "import":
+        import_file(args.file)
+        return 0
 
     if args.command == "check":
         print("\n".join(check_issue(Issue.from_text(args.issue_file.read_text())) or ["OK"]))

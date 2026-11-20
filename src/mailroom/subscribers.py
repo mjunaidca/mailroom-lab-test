@@ -1,34 +1,29 @@
 import csv
-from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 SUBSCRIBERS_CSV = Path(__file__).parents[2] / "data" / "subscribers.csv"
 
 
-@dataclass(frozen=True)
-class Subscriber:
+class Subscriber(BaseModel):
+    """One subscriber. Anything from outside must be validated through this."""
+
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
     first_name: str
     last_name: str
-    email: str
-    group: str
+    email: EmailStr
+    group: Literal["tea-curious", "gift-buyers", "daily-drinkers"]
     joined_on: date
-    consent: str
+    consent: str = Field(min_length=1)
 
 
 def read_subscribers() -> list[Subscriber]:
     with SUBSCRIBERS_CSV.open(newline="") as f:
-        return [
-            Subscriber(
-                first_name=row["first_name"],
-                last_name=row["last_name"],
-                email=row["email"],
-                group=row["group"],
-                joined_on=date.fromisoformat(row["joined_on"]),
-                consent=row["consent"],
-            )
-            for row in csv.DictReader(f)
-        ]
+        return [Subscriber.model_validate(row) for row in csv.DictReader(f)]
 
 
 def joined_since(
