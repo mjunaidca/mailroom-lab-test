@@ -3,13 +3,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationError
 
 from mailroom.problems import InputError, Problem
 
 SUBSCRIBERS_CSV = Path(__file__).parents[2] / "data" / "subscribers.csv"
+
+
+Group = Literal["tea-curious", "gift-buyers", "daily-drinkers"]
+GROUPS: tuple[str, ...] = get_args(Group)
 
 
 class Subscriber(BaseModel):
@@ -20,7 +24,7 @@ class Subscriber(BaseModel):
     first_name: str
     last_name: str
     email: EmailStr
-    group: Literal["tea-curious", "gift-buyers", "daily-drinkers"]
+    group: Group
     joined_on: date
     consent: str = Field(min_length=1)
 
